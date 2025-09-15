@@ -74,7 +74,7 @@ st_write(selected_region, here("data", new_name, glue("{new_name}.gpkg")), delet
 
 ```{r}
 # download and merge 2m DEM for testregion
-DEM_name = "DEM_2m"
+DEM_name = "DEM_25m"
 directory = here("data", test_region_name, DEM_name)
 download_and_merge_DEM(test_region, directory, "2", test_region_name)
 
@@ -85,13 +85,14 @@ dem_5m <- resample(dem, new_raster, method = "bilinear")
 writeRaster(dem_5m, here("data", test_region_name,"DEM_5m.tif"), overwrite=TRUE)
 
 # crop 10m DEM to test_region and resample
+res = 25
 dem <- rast("/Users/michafranz/Desktop/_Projekte/Geodaten/swisstopo/swissaltiregio_2056_5728.tif")
 dem_test_region <- crop(dem, test_region)
-new_raster <- rast(ext = ext(dem_test_region), resolution = 50, crs = crs(dem))
+new_raster <- rast(ext = ext(dem_test_region), resolution = res, crs = crs(dem))
 dem_25m_test_region <- resample(dem_test_region, new_raster, method = "bilinear")
 dem_25m_test_region_cropped <- crop(dem_25m_test_region, test_region)
 dem_25m_test_region_masked <- mask(dem_25m_test_region_cropped, test_region)
-writeRaster(dem_25m_test_region_masked, here("data", test_region_name, "DEM_50m.tif"), overwrite=TRUE)
+writeRaster(dem_25m_test_region_masked, here("data", test_region_name, glue("DEM_{res}m.tif")), overwrite=TRUE)
 
 ```
 
@@ -394,8 +395,6 @@ rasterize_tree_forest_data <- function(smv25_gpkg_path = here("data", "processed
 
 rasterize_tree_forest_data()
 
-
-
 create_slope_zones <- function(window_size = 3,overwrite = TRUE) {
   dem_final <- rast(here("data", test_region_name, author, "01_dem_final.tif"))
   # Calculate aspect
@@ -532,9 +531,11 @@ merge_small_polys <- function(polys, area_threshold = 4, mergeTo="largest"){
   return(slope_polygons_merged)
 }
 
-merged_polys <- merge_small_polys(polys) # Duration of st_touches: 398.8 seconds for 25m for test_region_2_small
-st_write(merged_polys, here("data", test_region_name, "szerencsits", "04_slope_zones_merged.gpkg"), delete_dsn =TRUE)
-merged_polys <- st_read(here("data", test_region_name, "szerencsits", "04_slope_zones_merged.gpkg"))
+merged_polys_byArea <- merge_small_polys(slope_polygons)
+merged_polys_byEdge <- merge_small_polys(slope_polygons, mergeTo = "longest") # Duration : 
+st_write(merged_polys_byArea, here("data", test_region_name, "szerencsits", "04_slope_zones_merged_byArea.gpkg"), delete_dsn =TRUE)
+st_write(merged_polys_byEdge, here("data", test_region_name, "szerencsits", "04_slope_zones_merged_byEdge.gpkg"), delete_dsn =TRUE)
+merged_polys <- st_read(here("data", test_region_name, "szerencsits", "04_slope_zones_merged_byArea.gpkg"))
 
 # catchment area preparation
 catchment_areas <- st_read(here("data", "source_data", "einzugsgebiete_40km.gpkg")) %>% st_zm() 
@@ -553,65 +554,113 @@ merged_polys_catchm_intersection_longestEdge <- merge_small_polys(slope_catchmen
 st_write(merged_polys_catchm_intersection_largestArea, here("data", test_region_name, author, "05a_slope_catchment_intersection_merged_byArea.gpkg"), delete_dsn =TRUE)
 st_write(merged_polys_catchm_intersection_longestEdge, here("data", test_region_name, author, "05a_slope_catchment_intersection_merged_byEdge.gpkg"), delete_dsn =TRUE)
 
+####################################################################################
+####################### forest altitude analysis ###################################
+####################################################################################
 
-slope_zone_final <- st_read( here("data", test_region_name, "szerencsits", "05a_slope_catchment_intersection_merged_byArea.gpkg"))
+####################### slope zone analysis ########################################
+slope_zone_analysis <- function() {
+  
+  # Read data
+  forest <- rast(here("data", test_region_name, author, "00_forest.tif"))
+  tree <- rast(here("data", test_region_name, author, "00_trees.tif"))
+  dem_final <- rast(here("data", test_region_name, author, "01_dem_final.tif"))
+  
+  # Create masks and extract elevation at vegetation locations
+  forest_mask <- forest == 1
+  tree_mask <- tree == 1
+  alt_forest_masked <- mask(dem_final, forest_mask, maskvalue = FALSE)
+  alt_trees_masked <- mask(dem_final, tree_mask, maskvalue = FALSE)
+  
+  # Write masked elevation rasters
+  writeRaster(alt_forest_masked, here("data", test_region_name, author, "06_forest_altitude.tif"), overwrite = TRUE)
+  writeRaster(alt_trees_masked, here("data", test_region_name, author, "06_trees_altitude.tif"), overwrite = TRUE)
+  
+  # Read slope zones
+  slope_zone_final_vect <- vect(st_read(here("data", test_region_name, author, "05a_slope_catchment_intersection_merged_byArea.gpkg")))
+  
+  # Calculate max elevation values per slope zone
+  max_vals_forest <- terra::extract(alt_forest_masked, slope_zone_final_vect, fun = max, na.rm = TRUE)
+  max_vals_trees <- terra::extract(alt_trees_masked, slope_zone_final_vect, fun = max, na.rm = TRUE)
+  
+  # Attach to vector and rasterize
+  slope_zone_final_vect$max_vals_forest <- max_vals_forest[, 2] 
+  slope_zone_final_vect$max_vals_trees <- max_vals_trees[, 2]
+  slope_zone_max_forest <- terra::rasterize(slope_zone_final_vect, alt_forest_masked, field = "max_vals_forest")
+  slope_zone_max_trees <- terra::rasterize(slope_zone_final_vect, alt_trees_masked, field = "max_vals_trees")
+  
+  # Write max elevation rasters
+  writeRaster(slope_zone_max_forest, here("data", test_region_name, author, "07_slope_zone_max_alt_forest.tif"), overwrite = TRUE)
+  writeRaster(slope_zone_max_trees, here("data", test_region_name, author, "07_slope_zone_max_alt_trees.tif"), overwrite = TRUE)
+  
+  # Calculate differences and binary treeline
+  slope_zone_diff_forest <- dem_final - slope_zone_max_forest
+  slope_zone_diff_trees <- dem_final - slope_zone_max_trees
+  slope_zone_diff_binary_forest <- slope_zone_diff_forest < 0
+  slope_zone_diff_binary_trees <- slope_zone_diff_trees < 0
+  
+  # Write final outputs
+  writeRaster(slope_zone_diff_forest, here("data", test_region_name, author, "08_slope_zone_diff_forest.tif"), overwrite = TRUE)
+  writeRaster(slope_zone_diff_trees, here("data", test_region_name, author, "08_slope_zone_diff_trees.tif"), overwrite = TRUE)
+  writeRaster(slope_zone_diff_binary_forest, here("data", test_region_name, author, "09_slope_zone_diff_binary_forest.tif"), overwrite = TRUE)
+  writeRaster(slope_zone_diff_binary_trees, here("data", test_region_name, author, "09_slope_zone_diff_binary_trees.tif"), overwrite = TRUE)
+  
+  cat("Slope analysis complete for", test_region_name, "\n")
+}
 
-# read data in
-forest <- rast(here("data", test_region_name, "szerencsits", "00_forest.tif"))
-tree <- rast(here("data", test_region_name, "szerencsits","00_trees.tif"))
-dem_final <- rast(here("data", test_region_name, author, "01_dem_final.tif"))
+slope_zone_analysis()
 
-# Create masks where values == 1
-forest_mask <- forest == 1
-tree_mask <- tree == 1
+####################### moving window analysis #####################################
 
-# Mask elevation raster with these logical masks
-alt_forest_masked <- mask(dem_final, forest_mask, maskvalue = FALSE)
-alt_trees_masked <- mask(dem_final, tree_mask, maskvalue = FALSE)
-
-# Write the masked elevation rasters
-writeRaster(alt_forest_masked, here("data", test_region_name, author, "06_forest_altitude.tif"), overwrite = TRUE)
-writeRaster(alt_trees_masked, here("data", test_region_name, author, "06_trees_altitude.tif"), overwrite = TRUE)
-
-# slope zone analysis 
-# ensure terra format for raster and vector
+# Read the altitude rasters
 altitude_forest <- rast(here("data", test_region_name, author, "06_forest_altitude.tif"))
 altitude_trees <- rast(here("data", test_region_name, author, "06_trees_altitude.tif"))
-slope_zone_final_vect <- vect(slope_zone_final)
-# calculate max elevation value, attach to vector and rasterize vector
-max_vals <- terra::extract(forest_elev_terra, slope_zone_final_vect, fun = max, na.rm = TRUE)
-slope_zone_final_vect$max_val <- max_vals[, 2] 
-slope_zone_max <- terra::rasterize(slope_zone_final_vect, forest_elev_terra, field = "max_val")
-writeRaster(slope_zone_max, here("data", test_region_name, "szerencsits", "slope_zone_max.tif"), overwrite = TRUE)
-slope_zone_max <- rast(here("data", test_region_name, "szerencsits", "slope_zone_max.tif"))
 
-slope_zone_difference <- dem_final-slope_zone_max
-writeRaster(slope_zone_difference, here("data", test_region_name, "szerencsits", "slope_zone_difference.tif"), overwrite = TRUE)
+# Calculate window size in pixels (radius = 1000m)
+cell_size <- res(altitude_forest)[1]  # assuming square pixels
+window_radius_pixels <- round(1000 / cell_size)
+window_size <- 2 * window_radius_pixels + 1  # full diameter + center pixel
 
-slope_zone_difference_binary <- slope_zone_difference < 0
-writeRaster(slope_zone_difference_binary, here("data", test_region_name, "szerencsits", "slope_zone_difference_binary.tif"), overwrite = TRUE)
+# Create circular weight matrix for 1000m radius
+weight_matrix <- focalMat(altitude_forest, d = 1000, type = "circle")
+weight_matrix[weight_matrix > 0] <- 1 
 
+# Apply focal maximum with 1000m radius
+focal_max_forest <- focal(altitude_forest, w = weight_matrix, fun = max, na.rm = TRUE)
+focal_max_trees <- focal(altitude_trees, w = weight_matrix, fun = max, na.rm = TRUE)
+focal_max_forest[focal_max_forest == 0] <- NA
+focal_max_trees[focal_max_trees == 0] <- NA
 
+# Write results
+writeRaster(focal_max_forest, here("data", test_region_name, author, "10_forest_altitude_focal_max_1000m.tif"), overwrite = TRUE)
+writeRaster(focal_max_trees, here("data", test_region_name, author, "10_trees_altitude_focal_max_1000m.tif"), overwrite = TRUE)
 
+dem_final <- rast(here("data", test_region_name, author, "01_dem_final.tif"))
+mov_window_diff_forest <- dem_final - focal_max_forest
+mov_window_diff_trees <- dem_final - focal_max_trees
 
-# moving window analysis
-window_size <- 39 # 39*25=975, 1000m mentioned in paper 
-forest_elev <- rast(here("data", test_region_name, "szerencsits", "forest_elev.tif"))
-# Apply focal filter only on forest areas
-forest_max_alt <- focal(forest_elev, w = matrix(1, window_size, window_size), fun = "max", na.rm = TRUE)
-writeRaster(forest_max_alt, here("data", test_region_name, "szerencsits", "max_elev.tif"), overwrite = TRUE)
+writeRaster(mov_window_diff_forest, here("data", test_region_name, "szerencsits", "11_mov_window_diff_forest.tif"), overwrite = TRUE)
+writeRaster(mov_window_diff_trees, here("data", test_region_name, "szerencsits", "11_mov_window_diff_trees.tif"), overwrite = TRUE)
 
-mov_window_difference_rast <- dem_final - forest_max_alt
-writeRaster(mov_window_difference_rast, here("data", test_region_name, "szerencsits", "mov_window_difference.tif"), overwrite = TRUE)
-
-mov_window_difference_binary <- difference_rast < 0
-writeRaster(mov_window_difference_binary, here("data", test_region_name, "szerencsits", "mov_window_difference_binary.tif"), overwrite = TRUE)
+mov_window_diff_binary_forest <- mov_window_diff_forest < 0
+mov_window_diff_binary_trees <- mov_window_diff_trees < 0
+writeRaster(mov_window_diff_binary_forest, here("data", test_region_name, "szerencsits", "12_mov_window_diff_binary_forest.tif"), overwrite = TRUE)
+writeRaster(mov_window_diff_binary_trees, here("data", test_region_name, "szerencsits", "12_mov_window_diff_binary_trees.tif"), overwrite = TRUE)
 
 
 # combine moving window and slope and polygonize
-sum_raster <- mov_window_difference_binary + slope_zone_difference_binary
-combined_rast <- app(sum_raster, function(x) ifelse(x >= 1, 1, 0))
-#writeRaster(combined_rast, here("data", test_region_name, "szerencsits", "final_binary_treeline.tif"), overwrite = TRUE)
+# Forest combination movin
+sum_raster_forest <- mov_window_diff_binary_forest + slope_zone_diff_binary_forest
+combined_forest <- app(sum_raster_forest, function(x) ifelse(x >= 1, 1, 0))
+
+ext(mov_window_diff_binary_forest)
+ext(slope_zone_diff_binary_forest)
+
+# Trees combination  
+sum_raster_trees <- mov_window_diff_binary_trees + slope_zone_diff_binary_trees
+combined_trees <- app(sum_raster_trees, function(x) ifelse(x >= 1, 1, 0))
+
+
 combined_rast <- rast(here("data", test_region_name, "szerencsits", "final_binary_treeline.tif"))
 r_filtered <- classify(combined_rast, cbind(0, NA))
 
