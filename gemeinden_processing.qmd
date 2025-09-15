@@ -1,0 +1,49 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+```{r}
+source("/Users/michafranz/Desktop/_Projekte/helper_functions.R")
+library(terra)
+library(here)
+library(sf)
+library(mapview)
+library(dplyr)
+library(raster)
+library(conflicted)
+library(RColorBrewer)
+library(nngeo)
+library(rgrass)
+library(whitebox)
+library(dbscan)
+library(glue)
+library(nngeo)
+library(readr)
+library(sp)
+library(deldir)
+conflict_prefer("filter", "dplyr")
+conflict_prefer("select", "dplyr")
+```
+
+
+```{r}
+gemeinden <- st_read(here("data", "gemeinden_oberhalb.gpkg")) %>% st_zm()
+
+largest_per_category <- gemeinden %>%
+  group_by(name) %>%
+  slice_max(area, n = 1) %>%
+  ungroup()
+
+largest_per_category$waldgrenze <- "Ja"
+
+email <- read.csv(here("data", "gemeinden_websites.csv"))
+
+email_join <- left_join(email, largest_per_category %>% dplyr::select(name, waldgrenze), by = c("Name" = "name")) %>% dplyr::select(-c("geom"))
+
+
+write.csv(email_join, here("data", "gemeinden_mail_waldgrenze.csv"))
+
+write.csv(largest_per_category %>% st_drop_geometry() %>% dplyr::select(name),here("data", "test.csv"))
+
+```

@@ -1,0 +1,891 @@
+---
+title: "Template"
+format: html
+editor: visual
+---
+
+```{r}
+library(myHelpers)
+library(terra)
+library(here)
+library(sf)
+library(mapview)
+library(dplyr)
+library(raster)
+library(conflicted)
+library(RColorBrewer)
+library(rgrass)
+library(whitebox)
+library(dbscan)
+library(glue)
+library(nngeo)
+library(readr)
+library(sp)
+library(geometry)
+library(exactextractr)
+library(lwgeom)
+library(units)
+conflict_prefer("filter", "dplyr")
+conflict_prefer("select", "dplyr")
+
+```
+
+# setup
+```{r}
+# initialising variables
+test_region_name <- "test_region_2_small"
+forest_name <- "swisstopo_all_forest"
+test_region <- st_read(here("data", test_region_name, glue("{test_region_name}.gpkg")))
+
+# test write
+
+
+v_write <- function(df){
+  time <- format(Sys.time(), "%H_%M_%S")
+  st_write(df, here("data", "test", "testing.gpkg"), layer = glue("test_{time}"), delete_layer=TRUE)
+}
+
+r_write <- function(raster){
+  time <- format(Sys.time(), "%H_%M_%S")
+  writeRaster(raster, here("data", "test", glue("testing_{time}.tif")), overwrite=TRUE)
+}
+
+```
+
+# generate test region from einzugsgebiete 
+```{r}
+new_name <- "test_region_2_small"
+einzug2km <- st_read(here("data", "diverses", "einzugsgebiete_2km.gpkg")) %>% st_zm()
+
+ids <- c(120642) # adjust as desired
+selected_region <- einzug2km %>% filter(TEZGNR150 %in% ids) %>% st_union() %>% st_as_sf()
+
+if (!dir.exists(here("data",new_name ))) {
+  dir.create(here("data",new_name ), recursive = TRUE)
+}
+
+st_write(selected_region, here("data", new_name, glue("{new_name}.gpkg")), delete_dsn = FALSE)
+```
+
+# create DEM test region files
+```{r}
+# download and merge 2m DEM for testregion
+DEM_name = "DEM_2m"
+directory = here("data", test_region_name, DEM_name)
+download_and_merge_DEM(test_region, directory, "2", test_region_name)
+
+# generate lower res raster from 2m DEM
+dem <- rast(here("data", test_region_name ,"DEM_2m",glue("merged_DEM_2m_", test_region_name, ".tif")))
+new_raster <- rast(ext = ext(dem), resolution = 5, crs = crs(dem))
+dem_5m <- resample(dem, new_raster, method = "bilinear")
+writeRaster(dem_5m, here("data", test_region_name,"DEM_5m.tif"), overwrite=TRUE)
+
+# crop 10m DEM to test_region and resample
+dem <- rast("/Users/michafranz/Desktop/_Projekte/Geodaten/swisstopo/swissaltiregio_2056_5728.tif")
+dem_test_region <- crop(dem, test_region)
+new_raster <- rast(ext = ext(dem_test_region), resolution = 50, crs = crs(dem))
+dem_25m_test_region <- resample(dem_test_region, new_raster, method = "bilinear")
+dem_25m_test_region_cropped <- crop(dem_25m_test_region, test_region)
+dem_25m_test_region_masked <- mask(dem_25m_test_region_cropped, test_region)
+writeRaster(dem_25m_test_region_masked, here("data", test_region_name, "DEM_50m.tif"), overwrite=TRUE)
+
+```
+
+# create forest test region files
+```{r}
+# get forest area for test region
+forest <- st_read(here("data", "source_data" ,"swissTLM3D_BB_Wald.gpkg"))
+forest_name <- "swisstopo_forest"
+
+# intersect individual trees with test region
+# ONLY FOR REGIONS IN EASTERN SWITZERLAND
+swisstopo_trees <- st_read(here("data", "source_data" ,"swiss_TLM3D_Einzelbaum.gpkg")) %>%
+  st_zm() %>% 
+  st_transform(2056) %>% 
+  select(geometry)
+
+swisstopo_trees_test_region <- st_intersection(swisstopo_trees, test_region)
+st_write(swisstopo_trees_test_region, here("data", test_region_name, glue("{test_region_name}_swisstopo_trees.gpkg")), delete_dsn = TRUE)
+
+# generate and write forest intersection and its outline 
+get_forest <- function(forest, forest_name, test_region, test_region_name) {
+  
+  forest_intersection <- st_intersection(forest, test_region) %>% st_make_valid()
+  # mapview(forest_intersection)
+  
+  forest_outline <- forest_intersection %>%
+    st_cast("POLYGON", do_split = TRUE) %>%
+    st_make_valid() %>%
+    st_cast("LINESTRING") %>%
+    st_buffer(15)
+  
+  st_write(forest_intersection, here("data", test_region_name, glue("{test_region_name}_{forest_name}.gpkg")), delete_dsn = TRUE)
+  st_write(forest_outline, here("data", test_region_name, glue("{test_region_name}_{forest_name}_outline.gpkg")), delete_dsn = TRUE)
+}
+
+get_forest(forest, forest_name, test_region, test_region_name)
+
+process_vector25_szerencsits <- function(input_dir = here("data", "source_data", "vector25"),
+                                       output_file = here("data", "processed_data", "SMV25_merged_szerencsits.gpkg")) {
+  
+  # Get all folders
+  folders <- list.dirs(input_dir, recursive = FALSE)
+  
+  # Define what to extract
+  objektart_filter <- list(
+    "T65_DKM25_BODENBEDECKUNG" = "Wald",
+    "T36_DKM25_EINZELBAUM" = c("Einzelbaum", "Gehoelzpunkt"),
+    "T43_DKM25_BODENBEDECKUNG_SYMB" = c("Gebueschwald_Symb", "Wald_offen_Symb")
+  )
+  
+  # Storage for merged data
+  all_data <- list()
+  
+  # Loop through folders
+  for(folder in folders) {
+    gpkg <- file.path(folder, "SMV25_CHLV95LN02.gpkg")
+    
+    # Read filtered layers
+    for(layer in names(objektart_filter)) {
+      data <- st_read(gpkg, layer, quiet = TRUE) %>%
+        filter(OBJEKTART %in% objektart_filter[[layer]])
+      
+      if(is.null(all_data[[layer]])) {
+        all_data[[layer]] <- data
+      } else {
+        all_data[[layer]] <- rbind(all_data[[layer]], data)
+      }
+    }
+    
+  # Read T50 (all categories) - only if not empty
+    t50_data <- st_read(gpkg, "T50_DKM25_MORPH_KLEINFORM_LIN", quiet = TRUE)
+    if(nrow(t50_data) > 0) {
+      if(is.null(all_data[["T50_DKM25_MORPH_KLEINFORM_LIN"]])) {
+        all_data[["T50_DKM25_MORPH_KLEINFORM_LIN"]] <- t50_data
+      } else {
+        all_data[["T50_DKM25_MORPH_KLEINFORM_LIN"]] <- rbind(all_data[["T50_DKM25_MORPH_KLEINFORM_LIN"]], t50_data)
+      }
+    }
+    
+    print(glue("folder {folder} done"))
+  }
+  
+  # Write merged geopackage
+  for(layer in names(all_data)) {
+    st_write(all_data[[layer]], output_file, layer = layer, append = TRUE, delete_layer = TRUE)
+  }
+  
+  return(invisible(all_data))
+}
+
+process_vector25_szerencsits()
+
+```
+
+
+# Paulsen and Körner 2001
+
+```{r}
+paulsen_koerner_2001 <- function(arealstatistik, dem_path, writefiles = FALSE) {
+  arealstat_testregion <- st_intersection(arealstatistik, test_region)
+  arealstat_testregion_forest <- arealstat_testregion %>% 
+    filter(AS97_72 %in% c(50, 51, 52, 53, 54, 55)) %>% # 
+    select(geom)
+  
+  # Load and process DEM
+  dem_30m <- rast(dem_path)
+  dem_cropped <- crop(dem_30m, test_region)
+  dem_masked <- mask(dem_cropped, test_region)
+  
+  # Extract elevation for forest points
+  arealstat_testregion_forest$elevation <- extract(dem_masked, arealstat_testregion_forest)[,2]
+  arealstat_testregion_forest$point_id <- 1:nrow(arealstat_testregion_forest)
+  
+  # Create 10km grid
+  grid_10km <- st_sf(geom = st_make_grid(test_region, cellsize = c(10000, 10000), square = TRUE, what = "polygons"))
+  grid_10km$grid_id <- 1:nrow(grid_10km)
+  
+  # Get all forest elevations per grid
+  grid_elevation <- st_join(grid_10km, arealstat_testregion_forest) %>% filter(!is.na(elevation)) %>%st_drop_geometry()
+
+  # Attach grid id to forest points
+  arealstat_testregion_forest <- st_join(arealstat_testregion_forest, grid_10km)
+  
+  # Get the highest forest elevation per grid cell
+  max_elevation_point_per_grid <- grid_elevation %>%
+    group_by(grid_id) %>% 
+    summarise(max_forest_elevation = max(elevation, na.rm = TRUE)) %>%  
+    ungroup()
+  
+  # Join back to the original grid
+  grid_10km_max_elev <- grid_10km %>%
+    inner_join(max_elevation_point_per_grid, by = "grid_id")
+  
+  # Get highest dem elevation per grid cell and apply filters
+  extracted_values <- extract(dem_30m, grid_10km_max_elev, fun = max, na.rm = TRUE)
+  grid_10km_max_elev$max_elevation <- extracted_values[, 2] 
+  grid_10km_max_elev$difference <- grid_10km_max_elev$max_elevation - grid_10km_max_elev$max_forest_elevation
+
+  # Ensure treeline elevations match authors criteria
+  grid_10km_max_elev <- grid_10km_max_elev %>% 
+    filter(max_elevation > 1750) %>% # min treeline elevation as indicated by authors
+    filter(difference > 150) # remove forest covered mountains and wind sheer effects on low peaks. if this filter returns a match, the max elevation should be run again, otherwise the cell will be disregarded
+  
+  # Join max forest elevations to arealstatistik points
+  arealstat_testregion_forest_join <- left_join(arealstat_testregion_forest, 
+                                                grid_10km_max_elev %>%
+                                                  select(max_forest_elevation, grid_id) %>% 
+                                                  st_drop_geometry())
+
+  # only for visualisation purpose to show where the highest forest elevations per grid cells are 
+  arealstat_testregion_forest_join$elev_diff <- arealstat_testregion_forest_join$max_forest_elevation - arealstat_testregion_forest_join$elevation 
+  arealstat_testregion_forest_join_max_elevation <- arealstat_testregion_forest_join %>% filter(elev_diff == 0)
+
+  # Create treeline raster
+  gis_treeline_raster <- rasterize(vect(grid_10km_max_elev), dem_masked, field = "max_forest_elevation")
+
+  # Calculate differences and mask, treeline position is where difference is 0
+  gis_treeline_difference <- dem_masked - gis_treeline_raster
+  gis_treeline_mask <- gis_treeline_difference < 0
+  gis_treeline_mask[gis_treeline_mask == 0] <- NA
+  gis_treeline_mask_v <- as.polygons(gis_treeline_mask, dissolve = TRUE) %>% st_as_sf()
+  
+  # Write files if requested
+  if (writefiles) {
+    # Create output directory if it doesn't exist
+    output_dir <- here("data", test_region_name, "paulsen_koerner")
+    if (!dir.exists(output_dir)) {
+      dir.create(output_dir, recursive = TRUE)
+    }
+    
+    # Write all output files
+    st_write(arealstat_testregion, here("data", test_region_name, "paulsen_koerner","01_arealstat_testregion.gpkg"), delete_dsn = TRUE)
+    st_write(arealstat_testregion_forest, here("data", test_region_name, "paulsen_koerner","02_arealstat_testregion_forest.gpkg"), delete_dsn = TRUE)
+    writeRaster(dem_masked, here("data", test_region_name, "paulsen_koerner","03_DEM_30m.tif"), overwrite = TRUE)
+    st_write(arealstat_testregion_forest_join, here("data", test_region_name, "paulsen_koerner","04_arealstat_forest_testregion_join.gpkg"), delete_dsn = TRUE)
+    st_write(grid_10km, here("data", test_region_name, "paulsen_koerner","05_grid_10km.gpkg"), delete_dsn = TRUE)
+    st_write(arealstat_testregion_forest_join_max_elevation, here("data", test_region_name, "paulsen_koerner","06_arealstat_forest_testregion_max_elev.gpkg"), delete_dsn = TRUE)
+    writeRaster(gis_treeline_raster, here("data", test_region_name, "paulsen_koerner","07_gis_treeline_altitude.tif"), overwrite = TRUE)
+    writeRaster(gis_treeline_difference, here("data", test_region_name, "paulsen_koerner","08_gis_treeline_difference.tif"), overwrite = TRUE)
+    writeRaster(gis_treeline_mask, here("data", test_region_name, "paulsen_koerner","09_gis_treeline_mask.tif"), overwrite = TRUE)
+    st_write(gis_treeline_mask_v, here("data", test_region_name, "paulsen_koerner","10_gis_treeline_vectorized.gpkg"), delete_dsn = TRUE)
+  
+  }
+}
+
+arealstatistik <- st_read(here("data", "source_data", "arealstatistik.gpkg"))
+dem_path = "/Users/michafranz/Desktop/_Projekte/Geodaten/switzerland_30m_DEM/swiss_DEM_30m.tif"
+writefiles = TRUE
+paulsen_koerner_2001(arealstatistik,
+                 dem_path = "/Users/michafranz/Desktop/_Projekte/Geodaten/switzerland_30m_DEM/swiss_DEM_30m.tif",
+                 writefiles = TRUE)
+```
+
+
+
+# Szerencsits 2012
+```{r}
+# initiate folder
+author <- "szerencsits" 
+if (!dir.exists(here("data", test_region_name, author ))) {
+  dir.create(here("data", test_region_name,author ), recursive = TRUE)
+}
+# clip arealstatistik and vector25 to test_region, select relevant categories for trees and forest dataset and rasterize both
+rasterize_szerencsits_data <- function(smv25_gpkg_path = here("data", "processed_data", "SMV25_merged_szerencsits.gpkg"),
+                                      resolution = 25,
+                                      touches = FALSE) {
+  
+  # Clip to test region and select relevant categories in AS
+  # NOAA92 to NOAA04 conversion: 9=52, 10=54, 11=50, 12=56, 13=55, 14=51, 15=57, 17=58, 18=59, 19=60, 75=37, 76=38, 77=38
+  arealstatistik <- st_read(here("data", "source_data", "arealstatistik.gpkg"))
+  arealstat_testregion <- st_intersection(arealstatistik, test_region)
+  arealstat_testregion_forest <- arealstat_testregion %>% 
+    filter(AS97_72 %in% c(50,52)) %>% 
+    select(geom)
+  arealstat_testregion_tree <- arealstat_testregion %>% 
+    filter(AS97_72 %in% c(37,38,50,51,52,54,55,56,57,58,59,60)) %>% # all forest data is also used for the tree dataset
+    select(geom)
+  
+  # Merge relevant categories from svm25 (already contains only relevant categories except for shrubs)
+  einzelbaum_testregion <- st_read(smv25_gpkg_path, "T36_DKM25_EINZELBAUM") %>% 
+    select(geom) %>% 
+    st_intersection(test_region)
+  
+  bodenbedeckung_symb_testregion <- st_read(smv25_gpkg_path, "T43_DKM25_BODENBEDECKUNG_SYMB") %>% 
+    filter(OBJEKTART=="Wald_offen_Symb") %>% 
+    select(geom) %>% 
+    st_intersection(test_region) # remove shrubs 
+  
+  smv25_data_testregion_forest <- st_read(smv25_gpkg_path, "T65_DKM25_BODENBEDECKUNG") %>% 
+    select(geom) %>% 
+    st_intersection(test_region)
+  
+  # Merge the two point layers from svm25
+  smv25_data_testregion_tree_points <- rbind(einzelbaum_testregion, bodenbedeckung_symb_testregion)
+  smv25_data_testregion_tree_polys <- smv25_data_testregion_forest # all forest data is also used for the tree dataset
+  
+  # Define common raster template (same extent, resolution, CRS)
+  template_raster <- rast(ext = test_region, resolution = resolution, crs = "EPSG:2056")
+  
+  # Rasterize forest datasets
+  forest_arealstat <- rasterize(arealstat_testregion_forest, template_raster, field = 1, touches = touches)
+  forest_smv25 <- rasterize(smv25_data_testregion_forest, template_raster, field = 1, touches = touches)
+  
+  # Rasterize tree datasets  
+  tree_arealstat <- rasterize(arealstat_testregion_tree, template_raster, field = 1, touches = touches)
+  tree_smv25_points <- rasterize(smv25_data_testregion_tree_points, template_raster, field = 1, touches = touches)
+  tree_smv25_polys <- rasterize(smv25_data_testregion_tree_polys, template_raster, field = 1, touches = touches)
+  
+  # Replace NA with 0
+  forest_arealstat[is.na(forest_arealstat)] <- 0
+  forest_smv25[is.na(forest_smv25)] <- 0
+  tree_arealstat[is.na(tree_arealstat)] <- 0
+  tree_smv25_points[is.na(tree_smv25_points)] <- 0
+  tree_smv25_polys[is.na(tree_smv25_polys)] <- 0
+  
+  # Combine using logical OR (any source = 1)
+  combined_forest <- (forest_arealstat | forest_smv25)
+  combined_trees <- (tree_arealstat | tree_smv25_points | tree_smv25_polys)
+  
+  writeRaster(combined_forest, here("data", test_region_name, "szerencsits", "00_forest.tif"))
+  writeRaster(combined_trees, here("data", test_region_name, "szerencsits","00_trees.tif"))
+}
+
+rasterize_szerencsits_data()
+
+preprocess_dem <- function(min_area_km2 = 4,
+                          overwrite = TRUE) {
+  dem_25m_test_region <- rast(here("data", test_region_name, "DEM_25m.tif"))
+  
+  # Create elevation mask
+  elevation_mask <- dem_25m_test_region >= 1000
+  dem_masked <- mask(dem_25m_test_region, elevation_mask, maskvalues = FALSE)
+  
+  # Remove areas below 1000
+  polygons <- as.polygons(elevation_mask, dissolve = TRUE) %>% 
+    st_as_sf() %>% 
+    st_cast("MULTIPOLYGON")
+
+  if(any(st_geometry_type(polygons) == "MULTIPOLYGON")) {polygons <- st_cast(polygons, "POLYGON")}
+  
+  # Filter and calculate areas
+  names(polygons)[1] <- "polygon_area"
+  polygons_above_threshold <- polygons %>% filter(polygon_area == 1) # 1 = above threshold
+  polygons_above_threshold$area_km2 <- as.numeric(st_area(polygons_above_threshold) / 1e6)
+  
+  # Keep only large polygons
+  large_polygons <- polygons_above_threshold[polygons_above_threshold$area_km2 > min_area_km2, ]
+  
+  # Create final mask and DEM
+  raster_mask <- rasterize(large_polygons, dem_25m_test_region, field = 1, background = NA)
+  dem_final <- mask(dem_25m_test_region, raster_mask)
+
+  writeRaster(dem_final, here("data", test_region_name, author, "01_dem_final.tif"), overwrite = overwrite)
+}
+
+preprocess_dem()
+
+create_slope_zones <- function(window_size = 3,overwrite = TRUE) {
+  dem_final <- rast(here("data", test_region_name, author, "01_dem_final.tif"))
+  # Calculate aspect
+  aspect <- terra::terrain(dem_final, v = 'aspect', unit = 'degrees')
+  
+  # Classify aspect into 4 cardinal directions
+  aspect_class <- classify(aspect, rcl = matrix(c(
+    0,   45,  1,
+    45,  135, 2,
+    135, 225, 3,
+    225, 315, 4,
+    315, 360, 1
+  ), ncol = 3, byrow = TRUE), include.lowest = TRUE) %>% as.factor()
+  
+  # Smooth aspect using focal window
+  aspect_smoothed <- focal(aspect_class, 
+                          w = matrix(1, window_size, window_size), 
+                          fun = 'modal', 
+                          na.rm = TRUE)
+  
+  writeRaster(aspect_smoothed, 
+              here("data", test_region_name, author, "02_slope_smoothed.tif"), 
+              overwrite = overwrite)
+  
+  # Polygonize raster
+  slope_polygons <- as.polygons(aspect_smoothed, dissolve = TRUE) %>% 
+    st_as_sf() %>% 
+    st_cast("POLYGON")
+  
+  # Calculate areas in km²
+  slope_polygons$area <- st_area(slope_polygons)
+  slope_polygons$area <- as.numeric(slope_polygons$area) / 1e6
+  
+  # Write slope zones
+  st_write(slope_polygons, 
+           here("data", test_region_name, author, "03_slope_zones.gpkg"), 
+           delete_dsn = TRUE)
+}
+create_slope_zones()
+
+slope_polygons <- st_read(here("data", test_region_name, author,"03_slope_zones.gpkg"))
+
+# polys <- slope_polygons[sample(nrow(slope_polygons), 2000), ] # random sample
+# polys <- head(slope_polygons, 5000)
+
+# merge polygons smaller than 4km2 with neighbouring polygons
+merge_small_polys <- function(polys, area_threshold = 4){
+  
+  start_time <- Sys.time()
+  if ("geom" %in% names(polys)) {
+  polys <- polys %>%
+    rename(geometry = geom)
+  }
+  
+  small_polys_start <- polys %>% filter(area < area_threshold)
+  start_length <- length(small_polys_start$area)
+  last_printed <- -1 
+  repeat {
+    small_polys <- polys %>% filter(area < area_threshold)
+    if (nrow(small_polys) == 0) break # end if no more small polys left
+    
+    current_pct <- round(100 - (length(small_polys) / start_length * 100), 1)
+    if (current_pct %% 0.1 == 0 && current_pct != last_printed) {
+      print(paste0(current_pct, " %"))
+      last_printed <- current_pct
+      time <- format(Sys.time(), "%H:%M:%S")
+      glue("Intermediate processing {time}")
+    }
+
+    # Pick the smallest one
+    smallest <- small_polys %>% arrange(area) %>% slice(1)
+    smallest_id <- which.max(st_equals(polys, smallest, sparse = FALSE))
+    # identify neighbour to merge
+    neighbors <- st_touches(polys[smallest_id, ], polys)[[1]]
+
+    valid_neighbors <- c()
+    boundary_lengths <- c()
+    
+    # neighbor_id <- neighbors[2]
+    
+    for (neighbor_id in neighbors) {
+      # Calculate shared boundary length
+      boundary_intersection <- st_intersection(
+        st_boundary(polys$geometry[smallest_id]),
+        st_boundary(polys$geometry[neighbor_id])
+      )
+
+      # Check if the intersection is a line (not just points)
+      if (length(boundary_intersection) > 0) {
+        boundary_length <- as.numeric(st_length(boundary_intersection))
+        if (boundary_length > 0.001) {
+          valid_neighbors <- c(valid_neighbors, neighbor_id)
+          boundary_lengths <- c(boundary_lengths, boundary_length)
+        }
+      }
+    }
+    
+    merge_with_id <- valid_neighbors[which.max(boundary_lengths)]
+    
+    # merge 
+    new_geom <- st_union(polys$geometry[c(smallest_id, merge_with_id)])
+    new_geom_check <- st_union(polys$geometry[c(smallest_id, merge_with_id)]) %>% st_as_sf()
+
+    # replace the old polygon with the merge and remove the smallest polygon
+    polys$geometry[merge_with_id] <- new_geom
+    polys <- polys[-smallest_id, ]
+    # Recalculate areas
+    polys$area <- st_area(polys)
+    polys$area <- as.numeric(polys$area ) / 1e6
+    
+    # if(runif(1, 0, 100) < 1) {
+    #   v_write(new_geom_check)
+    #   print(paste("wrote testfile"))
+    #   }
+  }
+  # merge neighbouring slope zones with same orientation
+  slope_polygons_merged <- polys %>%
+    group_by(focal_modal) %>%
+    summarise(geometry = st_union(geometry), .groups = 'drop') %>%
+    { lapply(1:nrow(.), function(i) {
+      st_cast(.[i, ], "POLYGON")
+    }) } %>%
+    do.call(rbind, .)
+  
+  end_time <- Sys.time()
+  cat("Duration:", round(difftime(end_time, start_time, units="secs"), 1), "seconds\n")
+  return(slope_polygons_merged)
+}
+
+merged_polys <- merge_small_polys(polys)
+# Duration of st_touches: 398.8 seconds for 25m for test_region_2_small
+
+st_write(slope_polygons_merged, here("data", test_region_name, "szerencsits", "04_slope_zones_merged.gpkg"), delete_dsn =TRUE)
+merged_polys <- st_read(here("data", test_region_name, "szerencsits", "04_slope_zones_merged.gpkg"))
+
+# catchment area preparation
+catchment_areas <- st_read(here("data", "diverses", "einzugsgebiete_40km.gpkg")) %>% st_zm() 
+catchment_areas_test_region <- st_intersection(catchment_areas, test_region) %>% 
+  filter(st_geometry_type(.) %in% c("POLYGON", "MULTIPOLYGON")) 
+st_write(catchment_areas_test_region, here("data", "test", "testing.gpkg"), layer="catchment_areas_test_region", delete_layer = TRUE)
+
+# intersect slopes with catchments
+slope_catchment_intersection <- st_intersection(
+  st_buffer(merged_polys, 0.1),  # Buffer by 0.1 because normal intersection leads to results, no idea why, works in QGIS
+  st_buffer(catchment_areas_test_region, 0.1)
+  ) %>% filter(st_geometry_type(.) %in% c("POLYGON", "MULTIPOLYGON")) 
+
+slope_catchment_intersection_nomultipart <- st_cast(slope_catchment_intersection, "MULTIPOLYGON") %>% st_cast("POLYGON") %>% select(focal_modal)
+slope_catchment_intersection_nomultipart$area <- as.numeric(st_area(slope_catchment_intersection_nomultipart) / 1e6)
+
+st_write(slope_catchment_intersection_nomultipart, here("data", test_region_name, author, "05_slope_catchment_intersection.gpkg"), delete_dsn =TRUE)
+
+merged_polys_catchm_intersection <- merge_small_polys(slope_catchment_intersection_nomultipart)
+
+st_write(merged_polys_catchm_intersection, here("data", test_region_name, author, "05a_slope_catchment_intersection_merged.gpkg"), delete_dsn =TRUE)
+slope_zone_final <- st_read( here("data", test_region_name, "szerencsits", "slope_catchment_intersection_merged.gpkg"))
+
+
+# attach elevation values to forest
+forest <- st_read(here("data", test_region_name, glue("{test_region_name}_swisstopo_forest.gpkg")))
+forest$cover <- 1
+forest_rast <- rasterize(vect(forest), dem_final, field = "cover", background = NA)
+forest_elev <- mask(dem_final, forest_rast)
+writeRaster(forest_elev, here("data", test_region_name, "szerencsits", "forest_elev.tif"), overwrite = TRUE)
+
+# slope zone analysis 
+# ensure terra format for raster and vector
+forest_elev_terra <- rast(here("data", test_region_name, "szerencsits", "forest_elev.tif"))
+slope_zone_final_vect <- vect(slope_zone_final)
+# calculate max elevation value, attach to vector and rasterize vectore
+max_vals <- terra::extract(forest_elev_terra, slope_zone_final_vect, fun = max, na.rm = TRUE)
+slope_zone_final_vect$max_val <- max_vals[, 2] 
+slope_zone_max <- terra::rasterize(slope_zone_final_vect, forest_elev_terra, field = "max_val")
+writeRaster(slope_zone_max, here("data", test_region_name, "szerencsits", "slope_zone_max.tif"), overwrite = TRUE)
+slope_zone_max <- rast(here("data", test_region_name, "szerencsits", "slope_zone_max.tif"))
+
+slope_zone_difference <- dem_final-slope_zone_max
+writeRaster(slope_zone_difference, here("data", test_region_name, "szerencsits", "slope_zone_difference.tif"), overwrite = TRUE)
+
+slope_zone_difference_binary <- slope_zone_difference < 0
+writeRaster(slope_zone_difference_binary, here("data", test_region_name, "szerencsits", "slope_zone_difference_binary.tif"), overwrite = TRUE)
+
+
+
+
+# moving window analysis
+window_size <- 39 # 39*25=975, 1000m mentioned in paper 
+forest_elev <- rast(here("data", test_region_name, "szerencsits", "forest_elev.tif"))
+# Apply focal filter only on forest areas
+forest_max_alt <- focal(forest_elev, w = matrix(1, window_size, window_size), fun = "max", na.rm = TRUE)
+writeRaster(forest_max_alt, here("data", test_region_name, "szerencsits", "max_elev.tif"), overwrite = TRUE)
+
+mov_window_difference_rast <- dem_final - forest_max_alt
+writeRaster(mov_window_difference_rast, here("data", test_region_name, "szerencsits", "mov_window_difference.tif"), overwrite = TRUE)
+
+mov_window_difference_binary <- difference_rast < 0
+writeRaster(mov_window_difference_binary, here("data", test_region_name, "szerencsits", "mov_window_difference_binary.tif"), overwrite = TRUE)
+
+
+# combine moving window and slope and polygonize
+sum_raster <- mov_window_difference_binary + slope_zone_difference_binary
+combined_rast <- app(sum_raster, function(x) ifelse(x >= 1, 1, 0))
+#writeRaster(combined_rast, here("data", test_region_name, "szerencsits", "final_binary_treeline.tif"), overwrite = TRUE)
+combined_rast <- rast(here("data", test_region_name, "szerencsits", "final_binary_treeline.tif"))
+r_filtered <- classify(combined_rast, cbind(0, NA))
+
+combined_polys <- as.polygons(r_filtered, dissolve=TRUE)
+
+combined_polys_sf <- st_as_sf(combined_polys) %>% st_cast("POLYGON") %>% st_make_valid() 
+combined_polys_sf$area <- as.numeric(st_area(combined_polys_sf))
+combined_polys_sf_filtered <- combined_polys_sf %>% filter(area > 500000)
+st_write(combined_polys_sf_filtered, here("data", test_region_name, "szerencsits","final_treeline.gpkg"), delete_dsn=TRUE)
+
+```
+
+
+# Ngyuen 2025 method
+
+```{r}
+forest <- st_read(here("data", test_region_name, glue("{test_region_name}_swisstopo_forest.gpkg")))
+dem <- rast(here("data", test_region_name ,"DEM_5m.tif"))
+
+# test dem
+dem_resample <- function(dem, res=10){
+  raster_prep <- rast(ext = ext(dem), resolution = res, crs = crs(dem))
+  new_dem <- resample(dem, raster_prep, method = "bilinear")
+  writeRaster(new_dem, here("data", test_region_name, "nguyen", glue("0_dem_{res}m.tif")), overwrite = TRUE)
+  return(new_dem)
+}
+
+dem <- dem_resample(dem)
+
+get_forest_elevation <- function(dem, forest){
+  forest$cover <- 1
+  forest_rast <- rasterize(vect(forest), dem, field = "cover", background = NA)
+  forest_elev <- mask(dem, forest_rast)
+  writeRaster(forest_elev, here("data", test_region_name, "nguyen", "1_forest_elev.tif"), overwrite = TRUE)
+  return(forest_elev)
+}
+
+forest_elevation <- get_forest_elevation(dem, forest)
+
+# Create a circular (disk-shaped) window of a given radius
+# w1 <- focalMat(forest_elev, d = 30, type = "circle")
+# w2 <- focalMat(forest_elev, d = 600, type = "circle")
+
+calculate_moving_window <- function(forest_elev, window_size, treeline_type){ # should be a disk, not square --> to be modified
+  w_square <- matrix(1, window_size, window_size)
+  terraOptions(memfrac = 0.8)
+  forest_limit <- focal(forest_elev, w = w_square, fun = function(x) quantile(x, 0.899, na.rm = TRUE, names = FALSE), na.policy = "all")
+  writeRaster(forest_limit, here("data", test_region_name, "nguyen", "2_{treeline_type}_limit_rast.tif"), overwrite = TRUE)
+  return(forest_limit)
+}
+
+forest_limit_rast <- calculate_moving_window(forest_elevation, 11, "forestline") # window size depends on resolution
+timber_limit_rast <- calculate_moving_window(forest_elevation, 61, "timberline")
+
+forest_limit_rast <- rast(here("data", test_region_name, "nguyen", "forest_limit_rast.tif"))
+timber_limit_rast <- rast(here("data", test_region_name, "nguyen", "tree_limit_rast.tif"))
+
+generate_treeline <- function(dem, forest_limit, treeline_type){
+  dem_threshold <- dem
+  dem_threshold[dem_threshold < 1750] <- NA # remove areas below 1750 as stated in paper
+  diff_rast_forest <-  dem_threshold - forest_limit # find treeline area
+  writeRaster(diff_rast_forest, here("data", test_region_name, "nguyen", glue("3_diff_rast_{treeline_type}.tif")), overwrite = TRUE)
+  
+  # generate mask
+  diff_rast_forest_binary <- diff_rast_forest < 0 
+  diff_rast_forest_binary[is.na(diff_rast_forest_binary)] <- 0 # set 0 values to NA for upcoming addition 
+  writeRaster(diff_rast_forest_binary, here("data", test_region_name, "nguyen", glue("4_diff_rast_mask_{treeline_type}.tif")), overwrite = TRUE)
+  
+  return(diff_rast_forest_binary)
+}
+
+diff_rast_forest_binary <- generate_treeline(dem, forest_limit_rast, "forestline")
+diff_rast_timber_binary <- generate_treeline(dem, timber_limit_rast, "timberline")
+
+
+combine_lines <- function(forestline, timberline){
+  # combine forest line and timberline
+  forest_timber_added <- forestline + timberline
+  writeRaster(forest_timber_added, here("data", test_region_name, "nguyen", "5_lines_combined.tif"), overwrite = TRUE)
+  realized_treeline <- app(forest_timber_added, function(x) ifelse(x >= 1, 1, NA))
+  writeRaster(realized_treeline, here("data", test_region_name, "nguyen", "6_realized_treeline_nguyen.tif"), overwrite = TRUE)
+
+  # convert raster to polygon
+  realized_treeline_poly <- as.polygons(realized_treeline, dissolve=TRUE)
+  realized_treeline_poly_sf <- st_as_sf(realized_treeline_poly) %>% 
+    st_cast("POLYGON") %>% 
+    st_make_valid()
+  st_write(realized_treeline_poly_sf, here("data", test_region_name, "nguyen","7_realized_treeline_nguyen.gpkg"), delete_dsn=TRUE)
+}
+
+combine_lines(diff_rast_forest_binary, diff_rast_timber_binary)
+
+```
+
+
+
+
+# delaunay triangulation
+
+```{r}
+swisstopo_all_forest_points <- st_read(here("data", test_region_name,"swisstopo_all_forest" ,"swisstopo_all_forest_points.gpkg"))
+points_sf <- swisstopo_all_forest_points
+
+generate_delaunay <- function(points_sf){
+  points_sf_dist <- points_sf %>% 
+    distinct(geom, .keep_all = TRUE)
+
+  coords <- st_coordinates(points_sf)
+  tri_indices <- delaunayn(coords)
+  
+  triangles <- apply(tri_indices, 1, function(idx) {
+    tri_coords <- coords[idx, ]
+    tri_coords <- rbind(tri_coords, tri_coords[1, ])  # close the triangle
+    st_polygon(list(tri_coords))
+  })
+  
+  triangulated_sf <- st_sf(geometry = st_sfc(triangles, crs = st_crs(points_sf_dist)))
+  
+  return(triangulated_sf)
+}
+
+st_write(generate_delaunay(points_sf), here("data", test_region_name, forest_name,"swisstopo_all_forest_points_delaunay.gpkg"), delete_dsn=TRUE)
+
+```
+
+# forest hull
+
+```{r}
+
+
+# different inputs
+swisstopo_testregion <- st_read(here("data", test_region_name, glue("{test_region_name}_{forest_name}_outline.gpkg")))
+swisstopo_trees_test_region <- st_read(here("data", test_region_name, "swisstopo_trees_test_region_1.gpkg")) %>% select(geom)
+
+# exists only after generate hull algo has run for this parent file
+swisstopo_all_forest_points <- st_read(here("data", test_region_name, "swisstopo_all_wald_points.gpkg")) %>% select(geom)
+
+swisstopo_forest_and_trees_test_region <- rbind(swisstopo_all_forest_points, swisstopo_trees_test_region)
+# st_write(swisstopo_forest_and_trees_test_region,here("data", test_region_name, "swisstopo_forest_and_tree_points.gpkg"), delete_dsn = TRUE)
+
+swisstopo_all_forest_noflow <- st_read(here("data", test_region_name, "D8", "zero_flow_points.gpkg"))
+
+forest <- swisstopo_all_forest_noflow
+name = "swisstopo_forest_no_flow"
+
+
+generate_hull <- function(forest, name, type="poly"){
+  
+    if (!dir.exists(here("data",test_region_name, name ))) {
+  dir.create(here("data",test_region_name, name ), recursive = TRUE)
+  }  
+  
+  if (type == "poly"){
+      # simplify for faster running time for the intersection
+  forest_simpl <- st_simplify(forest, dTolerance = 5) #%>% st_remove_holes()
+  
+  #mapview(forest_simpl) + mapview(forest_simpl, col.regions="red")
+  grid_points <- st_make_grid(forest_simpl, what = "centers", cellsize = 10, square = FALSE, flat_topped = FALSE) %>% st_as_sf() 
+  
+  forest_points <- st_intersection(forest_simpl, grid_points) %>% 
+    select(geom) %>%
+    distinct(geom, .keep_all = TRUE)
+  
+  # dbscan to identify outliers
+  # coords <- st_coordinates(forest_points)
+  # db <- dbscan(coords, eps=300, minPts = 30)
+  # 
+  # forest_points$cluster <- as.factor(db$cluster)
+  # # mapview(forest_points, zcol="cluster")
+  # forest_points_filtered <- forest_points #%>% filter(cluster != 0)
+  st_write(forest_points, here("data", test_region_name, name, glue("{name}_forest_points.gpkg")), delete_dsn=TRUE)
+  } else{
+    forest_points <- forest
+  } 
+
+  
+ 
+  # create hull with different ratios
+  ratios = c(0.01, 0.02, 0.03, 0.04, 0.05)
+  r= 0.01
+  for (r in ratios) {
+    hull <- st_concave_hull(st_union(forest_points), ratio = r) %>% st_as_sf()
+    mapview(hull)
+    filename <- glue::glue("{name}_forest_hull_ratio_{format(r, scientific = FALSE)}.gpkg")
+    filepath <- here("data", test_region_name, name,  filename)
+    
+    st_write(hull, filepath, delete_dsn = TRUE)
+  }
+}
+
+generate_hull(forest, name, "point")
+
+```
+
+#D8
+
+```{r}
+extract_no_flow_points <- function(test_region_name) {
+  # Input paths
+  outline_path <- here("data", test_region_name, glue("{test_region_name}_swisstopo_outline.gpkg"))
+  forest_path <- here("data", test_region_name, glue("{test_region_name}_swisstopo_forest.gpkg"))
+  dem_path <- here("data", test_region_name, "DEM_10m.tif")
+  
+  # Output directory
+  d8_dir <- here("data", test_region_name, "D8")
+  if (!dir.exists(d8_dir)) dir.create(d8_dir, recursive = TRUE)
+  
+  # Output paths
+  dem_fill_path <- file.path(d8_dir, "dem_fill.tif")
+  # dem_sub_path <- file.path(d8_dir, "dem_fill_subtraction.tif")
+  dem_fill_masked_path <- file.path(d8_dir, "dem_fill_masked.tif")
+  flow_accum_path <- file.path(d8_dir, "flow_accumulation_forest.tif")
+  flow_accum_outline_path <- file.path(d8_dir, "flow_accumulation_forest_outline.tif")
+  flow_accum_mask_path <- file.path(d8_dir, "flow_accumulation_outlined_masked.tif")
+  
+  # Read spatial data
+  forest_outline <- st_read(outline_path, quiet = TRUE)
+  forest <- st_read(forest_path, quiet = TRUE)
+  dem <- raster(dem_path)
+  
+  # Fill depressions and subtract
+  wbt_fill_depressions(dem_path, dem_fill_path)
+  #wbt_subtract(dem_fill_path, dem_path, dem_sub_path)
+  
+  # Mask filled DEM to forest
+  dem_fill_masked <- mask(raster(dem_fill_path), forest)
+  writeRaster(dem_fill_masked, dem_fill_masked_path, overwrite = TRUE)
+  
+  # Calculate flow accumulation
+  wbt_d8_flow_accumulation(dem_fill_masked_path, flow_accum_path, log = TRUE)
+  flow_accum <- raster(flow_accum_path)
+  
+  # Mask to forest outline
+  flow_outline <- mask(flow_accum, forest_outline)
+  writeRaster(flow_outline, flow_accum_outline_path, overwrite = TRUE)
+  
+  # Keep only zero-flow cells
+  flow_mask <- flow_outline
+  flow_mask[flow_mask[] > 0] <- NA
+  writeRaster(flow_mask, flow_accum_mask_path, overwrite = TRUE)
+  
+  # Convert to sf points
+  zero_flow_points <- rasterToPoints(raster(flow_accum_mask_path), spatial = TRUE) %>% 
+    st_as_sf()
+  
+  st_write(zero_flow_points, here("data", test_region_name, "D8", "zero_flow_points.gpkg"))
+}
+
+extract_no_flow_points(test_region_name)
+```
+
+```{r}
+
+download_files_from_csv <- function(directory) {
+  csv_file <- list.files(directory, pattern = "\\.csv$", full.names = TRUE)
+  download_links <- readr::read_csv(csv_file, col_names = FALSE)
+  names(download_links) <- "download_link"
+
+  tif_files <- list.files(path = directory, pattern = "\\.tif$", full.names = TRUE)
+  
+  # if files are already downloaded. skip download (e.g. if you add some files manually and want to rerun the merge function) 
+  if (length(tif_files) > 1) {
+    return()
+  } else {
+    # download all files from csv link
+    # link <- download_links$download_link[1] # for manual debugging
+    for (link in download_links$download_link) {
+      file_name <- basename(link)
+      destination <- file.path(directory, file_name)
+
+      tryCatch({
+        response <- httr::GET(link)
+        if (httr::status_code(response) == 200) {
+          httr::GET(link, httr::write_disk(destination, overwrite = TRUE))
+          message("Downloaded: ", file_name)
+        } else {
+          # Try replacing 2023 with 2022
+          alt_link <- gsub("2023", "2022", link)
+          alt_file_name <- basename(alt_link)
+          alt_destination <- file.path(directory, alt_file_name)
+
+          alt_response <- httr::GET(alt_link)
+          if (httr::status_code(alt_response) == 200) {
+            httr::GET(alt_link, httr::write_disk(destination, overwrite = TRUE))
+            message("Downloaded (alternate): ", alt_file_name)
+          } else {
+            message("Skipped (HTTP ", httr::status_code(response), "): ", file_name)
+          }
+        }
+      }, error = function(e) {
+        message("Error downloading: ", file_name, " - ", e$message)
+      })
+    }
+  }
+}
+
+
+directory <- here("data", "test_region_3", "DEM_2m")
+
+download_files_from_csv(directory)
+```
