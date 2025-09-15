@@ -31,18 +31,20 @@ conflict_prefer("select", "dplyr")
 ```
 
 # setup
+
 ```{r}
 # initialising variables
 test_region_name <- "test_region_2_small"
 forest_name <- "swisstopo_all_forest"
 test_region <- st_read(here("data", test_region_name, glue("{test_region_name}.gpkg")))
+author <- "szerencsits" 
 
 # test write
 
 
-v_write <- function(df){
+v_write <- function(df, appendix=1){
   time <- format(Sys.time(), "%H_%M_%S")
-  st_write(df, here("data", "test", "testing.gpkg"), layer = glue("test_{time}"), delete_layer=TRUE)
+  st_write(df, here("data", "test", "test.gpkg"), layer = glue("test_{time}_{appendix}"))
 }
 
 r_write <- function(raster){
@@ -52,7 +54,8 @@ r_write <- function(raster){
 
 ```
 
-# generate test region from einzugsgebiete 
+# generate test region from einzugsgebiete
+
 ```{r}
 new_name <- "test_region_2_small"
 einzug2km <- st_read(here("data", "diverses", "einzugsgebiete_2km.gpkg")) %>% st_zm()
@@ -68,6 +71,7 @@ st_write(selected_region, here("data", new_name, glue("{new_name}.gpkg")), delet
 ```
 
 # create DEM test region files
+
 ```{r}
 # download and merge 2m DEM for testregion
 DEM_name = "DEM_2m"
@@ -92,6 +96,7 @@ writeRaster(dem_25m_test_region_masked, here("data", test_region_name, "DEM_50m.
 ```
 
 # create forest test region files
+
 ```{r}
 # get forest area for test region
 forest <- st_read(here("data", "source_data" ,"swissTLM3D_BB_Wald.gpkg"))
@@ -181,7 +186,6 @@ process_vector25_szerencsits <- function(input_dir = here("data", "source_data",
 process_vector25_szerencsits()
 
 ```
-
 
 # Paulsen and Körner 2001
 
@@ -281,77 +285,15 @@ paulsen_koerner_2001(arealstatistik,
                  writefiles = TRUE)
 ```
 
-
-
 # Szerencsits 2012
+
 ```{r}
 # initiate folder
-author <- "szerencsits" 
+
 if (!dir.exists(here("data", test_region_name, author ))) {
   dir.create(here("data", test_region_name,author ), recursive = TRUE)
 }
-# clip arealstatistik and vector25 to test_region, select relevant categories for trees and forest dataset and rasterize both
-rasterize_szerencsits_data <- function(smv25_gpkg_path = here("data", "processed_data", "SMV25_merged_szerencsits.gpkg"),
-                                      resolution = 25,
-                                      touches = FALSE) {
-  
-  # Clip to test region and select relevant categories in AS
-  # NOAA92 to NOAA04 conversion: 9=52, 10=54, 11=50, 12=56, 13=55, 14=51, 15=57, 17=58, 18=59, 19=60, 75=37, 76=38, 77=38
-  arealstatistik <- st_read(here("data", "source_data", "arealstatistik.gpkg"))
-  arealstat_testregion <- st_intersection(arealstatistik, test_region)
-  arealstat_testregion_forest <- arealstat_testregion %>% 
-    filter(AS97_72 %in% c(50,52)) %>% 
-    select(geom)
-  arealstat_testregion_tree <- arealstat_testregion %>% 
-    filter(AS97_72 %in% c(37,38,50,51,52,54,55,56,57,58,59,60)) %>% # all forest data is also used for the tree dataset
-    select(geom)
-  
-  # Merge relevant categories from svm25 (already contains only relevant categories except for shrubs)
-  einzelbaum_testregion <- st_read(smv25_gpkg_path, "T36_DKM25_EINZELBAUM") %>% 
-    select(geom) %>% 
-    st_intersection(test_region)
-  
-  bodenbedeckung_symb_testregion <- st_read(smv25_gpkg_path, "T43_DKM25_BODENBEDECKUNG_SYMB") %>% 
-    filter(OBJEKTART=="Wald_offen_Symb") %>% 
-    select(geom) %>% 
-    st_intersection(test_region) # remove shrubs 
-  
-  smv25_data_testregion_forest <- st_read(smv25_gpkg_path, "T65_DKM25_BODENBEDECKUNG") %>% 
-    select(geom) %>% 
-    st_intersection(test_region)
-  
-  # Merge the two point layers from svm25
-  smv25_data_testregion_tree_points <- rbind(einzelbaum_testregion, bodenbedeckung_symb_testregion)
-  smv25_data_testregion_tree_polys <- smv25_data_testregion_forest # all forest data is also used for the tree dataset
-  
-  # Define common raster template (same extent, resolution, CRS)
-  template_raster <- rast(ext = test_region, resolution = resolution, crs = "EPSG:2056")
-  
-  # Rasterize forest datasets
-  forest_arealstat <- rasterize(arealstat_testregion_forest, template_raster, field = 1, touches = touches)
-  forest_smv25 <- rasterize(smv25_data_testregion_forest, template_raster, field = 1, touches = touches)
-  
-  # Rasterize tree datasets  
-  tree_arealstat <- rasterize(arealstat_testregion_tree, template_raster, field = 1, touches = touches)
-  tree_smv25_points <- rasterize(smv25_data_testregion_tree_points, template_raster, field = 1, touches = touches)
-  tree_smv25_polys <- rasterize(smv25_data_testregion_tree_polys, template_raster, field = 1, touches = touches)
-  
-  # Replace NA with 0
-  forest_arealstat[is.na(forest_arealstat)] <- 0
-  forest_smv25[is.na(forest_smv25)] <- 0
-  tree_arealstat[is.na(tree_arealstat)] <- 0
-  tree_smv25_points[is.na(tree_smv25_points)] <- 0
-  tree_smv25_polys[is.na(tree_smv25_polys)] <- 0
-  
-  # Combine using logical OR (any source = 1)
-  combined_forest <- (forest_arealstat | forest_smv25)
-  combined_trees <- (tree_arealstat | tree_smv25_points | tree_smv25_polys)
-  
-  writeRaster(combined_forest, here("data", test_region_name, "szerencsits", "00_forest.tif"))
-  writeRaster(combined_trees, here("data", test_region_name, "szerencsits","00_trees.tif"))
-}
 
-rasterize_szerencsits_data()
 
 preprocess_dem <- function(min_area_km2 = 4,
                           overwrite = TRUE) {
@@ -384,6 +326,75 @@ preprocess_dem <- function(min_area_km2 = 4,
 }
 
 preprocess_dem()
+smv25_gpkg_path = here("data", "processed_data", "SMV25_merged_szerencsits.gpkg")
+resolution = 25
+touches = FALSE
+# clip arealstatistik and vector25 to test_region, select relevant categories for trees and forest dataset and rasterize both
+rasterize_tree_forest_data <- function(smv25_gpkg_path = here("data", "processed_data", "SMV25_merged_szerencsits.gpkg"),
+                                      resolution = 25,
+                                      touches = FALSE) {
+  dem_final <- rast(here("data", test_region_name, author, "01_dem_final.tif")) 
+  dem_final_extend <- dem_final %>% st_bbox() %>% st_as_sfc() %>% st_as_sf()
+ 
+  
+  # Clip to test region and select relevant categories in AS
+  # NOAA92 to NOAA04 conversion: 9=52, 10=54, 11=50, 12=56, 13=55, 14=51, 15=57, 17=58, 18=59, 19=60, 75=37, 76=38, 77=38
+  arealstatistik <- st_read(here("data", "source_data", "arealstatistik.gpkg"))
+  arealstat_testregion <- st_intersection(arealstatistik, dem_final_extend) # intersect with DEM as DEM is smaller than test_region (only areas above 1000)
+  arealstat_testregion_forest <- arealstat_testregion %>% 
+    filter(AS97_72 %in% c(50,52)) %>% 
+    select(geom)
+  arealstat_testregion_tree <- arealstat_testregion %>% 
+    filter(AS97_72 %in% c(37,38,50,51,52,54,55,56,57,58,59,60)) %>% # all forest data is also used for the tree dataset
+    select(geom)
+  
+  # Merge relevant categories from svm25 (already contains only relevant categories except for shrubs)
+  einzelbaum_testregion <- st_read(smv25_gpkg_path, "T36_DKM25_EINZELBAUM") %>% 
+    filter(OBJEKTART=="Einzelbaum") %>% # remove Gehoelze
+    select(geom) %>% 
+    st_intersection(dem_final_extend)
+  
+  bodenbedeckung_symb_testregion <- st_read(smv25_gpkg_path, "T43_DKM25_BODENBEDECKUNG_SYMB") %>% 
+    filter(OBJEKTART=="Wald_offen_Symb") %>% # remove shrubs 
+    select(geom) %>% 
+    st_intersection(dem_final_extend) 
+  
+  smv25_data_testregion_forest <- st_read(smv25_gpkg_path, "T65_DKM25_BODENBEDECKUNG") %>% 
+    select(geom) %>% 
+    st_intersection(dem_final_extend)
+
+  # Merge the two point layers from svm25
+  smv25_data_testregion_tree_points <- rbind(einzelbaum_testregion, bodenbedeckung_symb_testregion)
+  smv25_data_testregion_tree_polys <- smv25_data_testregion_forest # all forest data is also used for the tree dataset
+
+  template_raster <- dem_final
+  # Rasterize forest datasets
+  forest_arealstat <- rasterize(arealstat_testregion_forest, template_raster, field = 1, touches = touches) # touches = TRUE means all cells that contain any forest get value 1
+  forest_smv25 <- rasterize(smv25_data_testregion_forest, template_raster, field = 1, touches = touches)
+  
+  # Rasterize tree datasets  
+  tree_arealstat <- rasterize(arealstat_testregion_tree, template_raster, field = 1, touches = touches)
+  tree_smv25_points <- rasterize(smv25_data_testregion_tree_points, template_raster, field = 1, touches = touches)
+  tree_smv25_polys <- rasterize(smv25_data_testregion_tree_polys, template_raster, field = 1, touches = touches)
+
+  # Replace NA with 0
+  forest_arealstat[is.na(forest_arealstat)] <- 0
+  forest_smv25[is.na(forest_smv25)] <- 0
+  tree_arealstat[is.na(tree_arealstat)] <- 0
+  tree_smv25_points[is.na(tree_smv25_points)] <- 0
+  tree_smv25_polys[is.na(tree_smv25_polys)] <- 0
+  
+  # Combine using logical OR (any source = 1)
+  combined_forest <- (forest_arealstat | forest_smv25)
+  combined_trees <- (tree_arealstat | tree_smv25_points | tree_smv25_polys)
+  
+  writeRaster(combined_forest, here("data", test_region_name, "szerencsits", "00_forest.tif"), overwrite=TRUE)
+  writeRaster(combined_trees, here("data", test_region_name, "szerencsits","00_trees.tif"), overwrite=TRUE)
+}
+
+rasterize_tree_forest_data()
+
+
 
 create_slope_zones <- function(window_size = 3,overwrite = TRUE) {
   dem_final <- rast(here("data", test_region_name, author, "01_dem_final.tif"))
@@ -429,76 +440,83 @@ slope_polygons <- st_read(here("data", test_region_name, author,"03_slope_zones.
 
 # polys <- slope_polygons[sample(nrow(slope_polygons), 2000), ] # random sample
 # polys <- head(slope_polygons, 5000)
+polys <- slope_catchment_intersection
+area_threshold = 4
 
-# merge polygons smaller than 4km2 with neighbouring polygons
-merge_small_polys <- function(polys, area_threshold = 4){
-  
+# merge polygons smaller than 4km2 with neighboring polygons
+merge_small_polys <- function(polys, area_threshold = 4, mergeTo="largest"){
+
   start_time <- Sys.time()
   if ("geom" %in% names(polys)) {
   polys <- polys %>%
     rename(geometry = geom)
   }
-  
+
   small_polys_start <- polys %>% filter(area < area_threshold)
   start_length <- length(small_polys_start$area)
   last_printed <- -1 
+  idx <- 1
   repeat {
+    idx <- idx +1
     small_polys <- polys %>% filter(area < area_threshold)
     if (nrow(small_polys) == 0) break # end if no more small polys left
-    
-    current_pct <- round(100 - (length(small_polys) / start_length * 100), 1)
-    if (current_pct %% 0.1 == 0 && current_pct != last_printed) {
-      print(paste0(current_pct, " %"))
-      last_printed <- current_pct
-      time <- format(Sys.time(), "%H:%M:%S")
-      glue("Intermediate processing {time}")
-    }
 
+    remaining_pct <- round(nrow(small_polys) / start_length * 100)
+    if (remaining_pct %% 10 == 0) {
+      print(glue("{100 - remaining_pct}% completed at {format(Sys.time(), '%H:%M:%S')}"))
+      last_printed <- remaining_pct
+    }
     # Pick the smallest one
     smallest <- small_polys %>% arrange(area) %>% slice(1)
-    smallest_id <- which.max(st_equals(polys, smallest, sparse = FALSE))
-    # identify neighbour to merge
-    neighbors <- st_touches(polys[smallest_id, ], polys)[[1]]
-
-    valid_neighbors <- c()
-    boundary_lengths <- c()
+    smallest_id <- which.max(st_equals(polys, smallest, sparse = FALSE)) # selects first only first match of smallest area if two are equally small
+    # identify neighbor to merge
     
-    # neighbor_id <- neighbors[2]
-    
-    for (neighbor_id in neighbors) {
-      # Calculate shared boundary length
-      boundary_intersection <- st_intersection(
-        st_boundary(polys$geometry[smallest_id]),
-        st_boundary(polys$geometry[neighbor_id])
-      )
-
-      # Check if the intersection is a line (not just points)
-      if (length(boundary_intersection) > 0) {
+    if (mergeTo == "largest"){
+      relate_result <- st_relate(polys[smallest_id, ], polys, pattern = "F***1****")[[1]]
+      largest_neighbor_id <- relate_result[which.max(polys$area[relate_result])]
+      merge_with_id <- largest_neighbor_id
+    } else{
+      
+      neighbors <- st_touches(polys[smallest_id, ], polys)[[1]]
+      valid_neighbors <- c()
+      boundary_lengths <- c()
+      # neighbor_id <- neighbors[2]
+      for (neighbor_id in neighbors) {
+        # Calculate shared boundary length
+        boundary_intersection <- st_intersection(
+          st_boundary(polys$geometry[smallest_id]),
+          st_boundary(polys$geometry[neighbor_id])
+        )
+  
         boundary_length <- as.numeric(st_length(boundary_intersection))
-        if (boundary_length > 0.001) {
-          valid_neighbors <- c(valid_neighbors, neighbor_id)
-          boundary_lengths <- c(boundary_lengths, boundary_length)
+        valid_neighbors <- c(valid_neighbors, neighbor_id)
+        boundary_lengths <- c(boundary_lengths, boundary_length)
+  
+        # Check if the intersection is a line (not just points)
+        if (length(boundary_intersection) > 0) {
+          boundary_length <- as.numeric(st_length(boundary_intersection))
+          if (boundary_length > 0.001) {
+            valid_neighbors <- c(valid_neighbors, neighbor_id)
+            boundary_lengths <- c(boundary_lengths, boundary_length)
+          }
         }
       }
+      merge_with_id <- valid_neighbors[which.max(boundary_lengths)]
     }
-    
-    merge_with_id <- valid_neighbors[which.max(boundary_lengths)]
     
     # merge 
     new_geom <- st_union(polys$geometry[c(smallest_id, merge_with_id)])
     new_geom_check <- st_union(polys$geometry[c(smallest_id, merge_with_id)]) %>% st_as_sf()
-
     # replace the old polygon with the merge and remove the smallest polygon
     polys$geometry[merge_with_id] <- new_geom
     polys <- polys[-smallest_id, ]
     # Recalculate areas
+    
     polys$area <- st_area(polys)
     polys$area <- as.numeric(polys$area ) / 1e6
-    
-    # if(runif(1, 0, 100) < 1) {
-    #   v_write(new_geom_check)
-    #   print(paste("wrote testfile"))
-    #   }
+    # v_write(smallest, appendix = glue("{idx}_a"))
+    # v_write(polys, appendix = glue("{idx}_b"))
+
   }
   # merge neighbouring slope zones with same orientation
   slope_polygons_merged <- polys %>%
@@ -508,53 +526,59 @@ merge_small_polys <- function(polys, area_threshold = 4){
       st_cast(.[i, ], "POLYGON")
     }) } %>%
     do.call(rbind, .)
-  
+
   end_time <- Sys.time()
   cat("Duration:", round(difftime(end_time, start_time, units="secs"), 1), "seconds\n")
   return(slope_polygons_merged)
 }
 
-merged_polys <- merge_small_polys(polys)
-# Duration of st_touches: 398.8 seconds for 25m for test_region_2_small
-
-st_write(slope_polygons_merged, here("data", test_region_name, "szerencsits", "04_slope_zones_merged.gpkg"), delete_dsn =TRUE)
+merged_polys <- merge_small_polys(polys) # Duration of st_touches: 398.8 seconds for 25m for test_region_2_small
+st_write(merged_polys, here("data", test_region_name, "szerencsits", "04_slope_zones_merged.gpkg"), delete_dsn =TRUE)
 merged_polys <- st_read(here("data", test_region_name, "szerencsits", "04_slope_zones_merged.gpkg"))
 
 # catchment area preparation
-catchment_areas <- st_read(here("data", "diverses", "einzugsgebiete_40km.gpkg")) %>% st_zm() 
+catchment_areas <- st_read(here("data", "source_data", "einzugsgebiete_40km.gpkg")) %>% st_zm() 
 catchment_areas_test_region <- st_intersection(catchment_areas, test_region) %>% 
   filter(st_geometry_type(.) %in% c("POLYGON", "MULTIPOLYGON")) 
-st_write(catchment_areas_test_region, here("data", "test", "testing.gpkg"), layer="catchment_areas_test_region", delete_layer = TRUE)
 
 # intersect slopes with catchments
-slope_catchment_intersection <- st_intersection(
-  st_buffer(merged_polys, 0.1),  # Buffer by 0.1 because normal intersection leads to results, no idea why, works in QGIS
-  st_buffer(catchment_areas_test_region, 0.1)
-  ) %>% filter(st_geometry_type(.) %in% c("POLYGON", "MULTIPOLYGON")) 
+slope_catchment_intersection <- st_intersection(merged_polys, catchment_areas_test_region) %>% st_collection_extract("POLYGON") %>% st_cast("POLYGON") %>% select(focal_modal)
+slope_catchment_intersection$area <- as.numeric(st_area(slope_catchment_intersection) / 1e6)
+st_write(slope_catchment_intersection, here("data", test_region_name, author, "05_slope_catchment_intersection.gpkg"), delete_dsn =TRUE)
+slope_catchment_intersection <- st_read(here("data", test_region_name, author, "05_slope_catchment_intersection.gpkg"))
 
-slope_catchment_intersection_nomultipart <- st_cast(slope_catchment_intersection, "MULTIPOLYGON") %>% st_cast("POLYGON") %>% select(focal_modal)
-slope_catchment_intersection_nomultipart$area <- as.numeric(st_area(slope_catchment_intersection_nomultipart) / 1e6)
-
-st_write(slope_catchment_intersection_nomultipart, here("data", test_region_name, author, "05_slope_catchment_intersection.gpkg"), delete_dsn =TRUE)
-
-merged_polys_catchm_intersection <- merge_small_polys(slope_catchment_intersection_nomultipart)
-
-st_write(merged_polys_catchm_intersection, here("data", test_region_name, author, "05a_slope_catchment_intersection_merged.gpkg"), delete_dsn =TRUE)
-slope_zone_final <- st_read( here("data", test_region_name, "szerencsits", "slope_catchment_intersection_merged.gpkg"))
+# integrate small polygons into larger ones
+merged_polys_catchm_intersection_largestArea <- merge_small_polys(slope_catchment_intersection)
+merged_polys_catchm_intersection_longestEdge <- merge_small_polys(slope_catchment_intersection, mergeTo = "longest")
+st_write(merged_polys_catchm_intersection_largestArea, here("data", test_region_name, author, "05a_slope_catchment_intersection_merged_byArea.gpkg"), delete_dsn =TRUE)
+st_write(merged_polys_catchm_intersection_longestEdge, here("data", test_region_name, author, "05a_slope_catchment_intersection_merged_byEdge.gpkg"), delete_dsn =TRUE)
 
 
-# attach elevation values to forest
-forest <- st_read(here("data", test_region_name, glue("{test_region_name}_swisstopo_forest.gpkg")))
-forest$cover <- 1
-forest_rast <- rasterize(vect(forest), dem_final, field = "cover", background = NA)
-forest_elev <- mask(dem_final, forest_rast)
-writeRaster(forest_elev, here("data", test_region_name, "szerencsits", "forest_elev.tif"), overwrite = TRUE)
+slope_zone_final <- st_read( here("data", test_region_name, "szerencsits", "05a_slope_catchment_intersection_merged_byArea.gpkg"))
+
+# read data in
+forest <- rast(here("data", test_region_name, "szerencsits", "00_forest.tif"))
+tree <- rast(here("data", test_region_name, "szerencsits","00_trees.tif"))
+dem_final <- rast(here("data", test_region_name, author, "01_dem_final.tif"))
+
+# Create masks where values == 1
+forest_mask <- forest == 1
+tree_mask <- tree == 1
+
+# Mask elevation raster with these logical masks
+alt_forest_masked <- mask(dem_final, forest_mask, maskvalue = FALSE)
+alt_trees_masked <- mask(dem_final, tree_mask, maskvalue = FALSE)
+
+# Write the masked elevation rasters
+writeRaster(alt_forest_masked, here("data", test_region_name, author, "06_forest_altitude.tif"), overwrite = TRUE)
+writeRaster(alt_trees_masked, here("data", test_region_name, author, "06_trees_altitude.tif"), overwrite = TRUE)
 
 # slope zone analysis 
 # ensure terra format for raster and vector
-forest_elev_terra <- rast(here("data", test_region_name, "szerencsits", "forest_elev.tif"))
+altitude_forest <- rast(here("data", test_region_name, author, "06_forest_altitude.tif"))
+altitude_trees <- rast(here("data", test_region_name, author, "06_trees_altitude.tif"))
 slope_zone_final_vect <- vect(slope_zone_final)
-# calculate max elevation value, attach to vector and rasterize vectore
+# calculate max elevation value, attach to vector and rasterize vector
 max_vals <- terra::extract(forest_elev_terra, slope_zone_final_vect, fun = max, na.rm = TRUE)
 slope_zone_final_vect$max_val <- max_vals[, 2] 
 slope_zone_max <- terra::rasterize(slope_zone_final_vect, forest_elev_terra, field = "max_val")
@@ -599,7 +623,6 @@ combined_polys_sf_filtered <- combined_polys_sf %>% filter(area > 500000)
 st_write(combined_polys_sf_filtered, here("data", test_region_name, "szerencsits","final_treeline.gpkg"), delete_dsn=TRUE)
 
 ```
-
 
 # Ngyuen 2025 method
 
@@ -681,9 +704,6 @@ combine_lines <- function(forestline, timberline){
 combine_lines(diff_rast_forest_binary, diff_rast_timber_binary)
 
 ```
-
-
-
 
 # delaunay triangulation
 
