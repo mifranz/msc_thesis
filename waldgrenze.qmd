@@ -34,7 +34,7 @@ conflict_prefer("select", "dplyr")
 
 ```{r}
 # initialising variables
-test_region_name <- "test_region_2_small"
+test_region_name <- "test_region_5"
 forest_name <- "swisstopo_all_forest"
 test_region <- st_read(here("data", test_region_name, glue("{test_region_name}.gpkg")))
 author <- "szerencsits" 
@@ -42,14 +42,14 @@ author <- "szerencsits"
 # test write
 
 
-v_write <- function(df, appendix=1){
+v_write <- function(df, appendix=""){
   time <- format(Sys.time(), "%H_%M_%S")
   st_write(df, here("data", "test", "test.gpkg"), layer = glue("test_{time}_{appendix}"))
 }
 
-r_write <- function(raster){
+r_write <- function(raster, appendix=""){
   time <- format(Sys.time(), "%H_%M_%S")
-  writeRaster(raster, here("data", "test", glue("testing_{time}.tif")), overwrite=TRUE)
+  writeRaster(raster, here("data", "test", glue("testing_{time}_{appendix}.tif")), overwrite=TRUE)
 }
 
 ```
@@ -57,10 +57,10 @@ r_write <- function(raster){
 # generate test region from einzugsgebiete
 
 ```{r}
-new_name <- "test_region_2_small"
-einzug2km <- st_read(here("data", "diverses", "einzugsgebiete_2km.gpkg")) %>% st_zm()
+new_name <- "test_region_5"
+einzug2km <- st_read(here("data", "source_data", "einzugsgebiete_2km.gpkg")) %>% st_zm()
 
-ids <- c(120642) # adjust as desired
+ids <- c(120479) # adjust as desired
 selected_region <- einzug2km %>% filter(TEZGNR150 %in% ids) %>% st_union() %>% st_as_sf()
 
 if (!dir.exists(here("data",new_name ))) {
@@ -191,6 +191,31 @@ process_vector25_szerencsits()
 # Paulsen and Körner 2001
 
 ```{r}
+start_time <- Sys.time()
+# initiate settings
+show_message <- TRUE
+
+config <- list(
+  integration_method = "byArea", # "byArea" or "byEdge" determines the method of merging polygons smaller than 4km2 into larger ones.
+  resolution = 25,
+  touches = FALSE, # determines which areas are considered forest/tree when rasterizing (TRUE = any touching part of cell, FALSE = center of cell must be within polygon and line render path)
+  area_threshold = 4, # minimum area of slope zones in km2
+  majority_filter_size = 3, # size of moving window for majority filter on aspect raster (3*25m = 75m)
+  moving_window_size = 1000,
+  forest_categories_as97 = c(50,52), # used by author: 50, 52
+  tree_categories_as97 = c(37,38,50,51,52,54,55,56,57,58,59,60), # used by author: NOAA92 to NOAA04 : 9=52, 10=54, 11=50, 12=56, 13=55, 14=51, 15=57, 17=58, 18=59, 19=60, 75=37, 76=38, 77=38
+  einzelbaum_objektart = c("Einzelbaum"),
+  bodenbedeckung_symb_objektart = c("Wald_offen_Symb")
+)
+
+# Create hash for folder name based on config settings
+config_hash <- digest::digest(config, algo = "md5")
+run_folder <- here("data", test_region_name, author, paste0("run_", substr(config_hash, 1, 8)))
+
+if (!dir.exists(run_folder)) {
+  dir.create(run_folder, recursive = TRUE)
+}
+
 paulsen_koerner_2001 <- function(arealstatistik, dem_path, writefiles = FALSE) {
   arealstat_testregion <- st_intersection(arealstatistik, test_region)
   arealstat_testregion_forest <- arealstat_testregion %>% 
@@ -289,15 +314,35 @@ paulsen_koerner_2001(arealstatistik,
 # Szerencsits 2012
 
 ```{r}
-# initiate folder
+start_time <- Sys.time()
+# initiate settings
+show_message <- TRUE
 
-if (!dir.exists(here("data", test_region_name, author ))) {
-  dir.create(here("data", test_region_name,author ), recursive = TRUE)
+config <- list(
+  integration_method = "byArea", # "byArea" or "byEdge" determines the method of merging polygons smaller than 4km2 into larger ones.
+  resolution = 25,
+  touches = FALSE, # determines which areas are considered forest/tree when rasterizing (TRUE = any touching part of cell, FALSE = center of cell must be within polygon and line render path)
+  area_threshold = 4, # minimum area of slope zones in km2
+  majority_filter_window_size = 3, # size of moving window for majority filter on aspect raster (3*25m = 75m)
+  moving_window_size = 1000,
+  forest_categories_as97 = c(50,52), # used by author: 50, 52
+  tree_categories_as97 = c(37,38,50,51,52,54,55,56,57,58,59,60), # used by author: NOAA92 to NOAA04 : 9=52, 10=54, 11=50, 12=56, 13=55, 14=51, 15=57, 17=58, 18=59, 19=60, 75=37, 76=38, 77=38
+  einzelbaum_objektart = c("Einzelbaum"),
+  bodenbedeckung_symb_objektart = c("Wald_offen_Symb")
+)
+
+# Create hash for folder name based on config settings
+config_hash <- digest::digest(config, algo = "md5")
+run_folder <- here("data", test_region_name, author, paste0("run_", substr(config_hash, 1, 8)))
+
+if (!dir.exists(run_folder)) {
+  dir.create(run_folder, recursive = TRUE)
 }
 
+# Save config for reference
+writeLines(capture.output(dput(config)), file.path(run_folder, "config.txt"))
 
-preprocess_dem <- function(min_area_km2 = 4,
-                          overwrite = TRUE) {
+preprocess_dem <- function() {
   dem_25m_test_region <- rast(here("data", test_region_name, "DEM_25m.tif"))
   
   # Create elevation mask
@@ -313,71 +358,64 @@ preprocess_dem <- function(min_area_km2 = 4,
   
   # Filter and calculate areas
   names(polygons)[1] <- "polygon_area"
-  polygons_above_threshold <- polygons %>% filter(polygon_area == 1) # 1 = above threshold
+  polygons_above_threshold <- polygons %>% filter(polygon_area == 1) # 1 = above 1000m
   polygons_above_threshold$area_km2 <- as.numeric(st_area(polygons_above_threshold) / 1e6)
   
   # Keep only large polygons
-  large_polygons <- polygons_above_threshold[polygons_above_threshold$area_km2 > min_area_km2, ]
+  large_polygons <- polygons_above_threshold[polygons_above_threshold$area_km2 > config$area_threshold, ]
   
   # Create final mask and DEM
   raster_mask <- rasterize(large_polygons, dem_25m_test_region, field = 1, background = NA)
   dem_final <- mask(dem_25m_test_region, raster_mask)
 
-  writeRaster(dem_final, here("data", test_region_name, author, "01_dem_final.tif"), overwrite = overwrite)
+  writeRaster(dem_final, file.path(run_folder, "01_dem_final.tif"), overwrite = TRUE)
 }
 
 preprocess_dem()
-smv25_gpkg_path = here("data", "processed_data", "SMV25_merged_szerencsits.gpkg")
-resolution = 25
-touches = FALSE
+
 # clip arealstatistik and vector25 to test_region, select relevant categories for trees and forest dataset and rasterize both
-rasterize_tree_forest_data <- function(smv25_gpkg_path = here("data", "processed_data", "SMV25_merged_szerencsits.gpkg"),
-                                      resolution = 25,
-                                      touches = FALSE) {
-  dem_final <- rast(here("data", test_region_name, author, "01_dem_final.tif")) 
+rasterize_tree_forest_data <- function() {
+  dem_final <- rast(file.path(run_folder, "01_dem_final.tif")) 
   dem_final_extend <- dem_final %>% st_bbox() %>% st_as_sfc() %>% st_as_sf()
  
-  
+  smv25_gpkg_path = here("data", "processed_data", "SMV25_merged_szerencsits.gpkg")
   # Clip to test region and select relevant categories in AS
-  # NOAA92 to NOAA04 conversion: 9=52, 10=54, 11=50, 12=56, 13=55, 14=51, 15=57, 17=58, 18=59, 19=60, 75=37, 76=38, 77=38
+  
   arealstatistik <- st_read(here("data", "source_data", "arealstatistik.gpkg"))
   arealstat_testregion <- st_intersection(arealstatistik, dem_final_extend) # intersect with DEM as DEM is smaller than test_region (only areas above 1000)
   arealstat_testregion_forest <- arealstat_testregion %>% 
-    filter(AS97_72 %in% c(50,52)) %>% 
+    filter(AS97_72 %in% config$forest_categories_as97) %>% 
     select(geom)
   arealstat_testregion_tree <- arealstat_testregion %>% 
-    filter(AS97_72 %in% c(37,38,50,51,52,54,55,56,57,58,59,60)) %>% # all forest data is also used for the tree dataset
+    filter(AS97_72 %in% config$tree_categories_as97) %>% # all forest data is also used for the tree dataset
     select(geom)
   
   # Merge relevant categories from svm25 (already contains only relevant categories except for shrubs)
   einzelbaum_testregion <- st_read(smv25_gpkg_path, "T36_DKM25_EINZELBAUM") %>% 
-    filter(OBJEKTART=="Einzelbaum") %>% # remove Gehoelze
+    filter(OBJEKTART %in% config$einzelbaum_objektart) %>% # remove Gehoelze
     select(geom) %>% 
     st_intersection(dem_final_extend)
   
   bodenbedeckung_symb_testregion <- st_read(smv25_gpkg_path, "T43_DKM25_BODENBEDECKUNG_SYMB") %>% 
-    filter(OBJEKTART=="Wald_offen_Symb") %>% # remove shrubs 
+    filter(OBJEKTART %in% config$bodenbedeckung_symb_objektart) %>% # remove shrubs 
     select(geom) %>% 
     st_intersection(dem_final_extend) 
   
   smv25_data_testregion_forest <- st_read(smv25_gpkg_path, "T65_DKM25_BODENBEDECKUNG") %>% 
     select(geom) %>% 
     st_intersection(dem_final_extend)
-
   # Merge the two point layers from svm25
   smv25_data_testregion_tree_points <- rbind(einzelbaum_testregion, bodenbedeckung_symb_testregion)
   smv25_data_testregion_tree_polys <- smv25_data_testregion_forest # all forest data is also used for the tree dataset
-
   template_raster <- dem_final
   # Rasterize forest datasets
-  forest_arealstat <- rasterize(arealstat_testregion_forest, template_raster, field = 1, touches = touches) # touches = TRUE means all cells that contain any forest get value 1
-  forest_smv25 <- rasterize(smv25_data_testregion_forest, template_raster, field = 1, touches = touches)
+  forest_arealstat <- rasterize(arealstat_testregion_forest, template_raster, field = 1, touches = config$touches) # touches = TRUE means all cells that contain any forest get value 1
+  forest_smv25 <- rasterize(smv25_data_testregion_forest, template_raster, field = 1, touches = config$touches)
   
   # Rasterize tree datasets  
-  tree_arealstat <- rasterize(arealstat_testregion_tree, template_raster, field = 1, touches = touches)
-  tree_smv25_points <- rasterize(smv25_data_testregion_tree_points, template_raster, field = 1, touches = touches)
-  tree_smv25_polys <- rasterize(smv25_data_testregion_tree_polys, template_raster, field = 1, touches = touches)
-
+  tree_arealstat <- rasterize(arealstat_testregion_tree, template_raster, field = 1, touches = config$touches)
+  tree_smv25_points <- rasterize(smv25_data_testregion_tree_points, template_raster, field = 1, touches = config$touches)
+  tree_smv25_polys <- rasterize(smv25_data_testregion_tree_polys, template_raster, field = 1, touches = config$touches)
   # Replace NA with 0
   forest_arealstat[is.na(forest_arealstat)] <- 0
   forest_smv25[is.na(forest_smv25)] <- 0
@@ -389,14 +427,14 @@ rasterize_tree_forest_data <- function(smv25_gpkg_path = here("data", "processed
   combined_forest <- (forest_arealstat | forest_smv25)
   combined_trees <- (tree_arealstat | tree_smv25_points | tree_smv25_polys)
   
-  writeRaster(combined_forest, here("data", test_region_name, "szerencsits", "00_forest.tif"), overwrite=TRUE)
-  writeRaster(combined_trees, here("data", test_region_name, "szerencsits","00_trees.tif"), overwrite=TRUE)
+  writeRaster(combined_forest, file.path(run_folder, "00_forest.tif"), overwrite=TRUE)
+  writeRaster(combined_trees, file.path(run_folder, "00_trees.tif"), overwrite=TRUE)
 }
 
 rasterize_tree_forest_data()
 
-create_slope_zones <- function(window_size = 3,overwrite = TRUE) {
-  dem_final <- rast(here("data", test_region_name, author, "01_dem_final.tif"))
+create_slope_polygons <- function() {
+  dem_final <- rast(file.path(run_folder, "01_dem_final.tif"))
   # Calculate aspect
   aspect <- terra::terrain(dem_final, v = 'aspect', unit = 'degrees')
   
@@ -411,13 +449,11 @@ create_slope_zones <- function(window_size = 3,overwrite = TRUE) {
   
   # Smooth aspect using focal window
   aspect_smoothed <- focal(aspect_class, 
-                          w = matrix(1, window_size, window_size), 
+                          w = matrix(1, config$majority_filter_window_size, config$majority_filter_window_size), 
                           fun = 'modal', 
                           na.rm = TRUE)
   
-  writeRaster(aspect_smoothed, 
-              here("data", test_region_name, author, "02_slope_smoothed.tif"), 
-              overwrite = overwrite)
+  writeRaster(aspect_smoothed, file.path(run_folder, "02_slope_smoothed.tif"), overwrite = TRUE)
   
   # Polygonize raster
   slope_polygons <- as.polygons(aspect_smoothed, dissolve = TRUE) %>% 
@@ -427,23 +463,28 @@ create_slope_zones <- function(window_size = 3,overwrite = TRUE) {
   # Calculate areas in km²
   slope_polygons$area <- st_area(slope_polygons)
   slope_polygons$area <- as.numeric(slope_polygons$area) / 1e6
+  slope_polygons <- slope_polygons %>%
+  rename(orientation = focal_modal) %>%
+  mutate(orientation = case_when(
+    orientation == 1 ~ "North",
+    orientation == 2 ~ "East", 
+    orientation == 3 ~ "South",
+    orientation == 4 ~ "West"
+  ))
   
-  # Write slope zones
-  st_write(slope_polygons, 
-           here("data", test_region_name, author, "03_slope_zones.gpkg"), 
-           delete_dsn = TRUE)
+  # Write slope polygons
+  st_write(slope_polygons, file.path(run_folder, "03_slope_zones.gpkg"), delete_dsn = TRUE, quiet = show_message)
 }
-create_slope_zones()
+create_slope_polygons()
 
-slope_polygons <- st_read(here("data", test_region_name, author,"03_slope_zones.gpkg"))
+####################### slope zone generation ###################################
 
-# polys <- slope_polygons[sample(nrow(slope_polygons), 2000), ] # random sample
-# polys <- head(slope_polygons, 5000)
-polys <- slope_catchment_intersection
-area_threshold = 4
+slope_polygons <- st_read(file.path(run_folder,"03_slope_zones.gpkg"))
+# polys <- slope_polygons
+# file = "05a_slope_catchment_intersection_merged"
 
 # merge polygons smaller than 4km2 with neighboring polygons
-merge_small_polys <- function(polys, area_threshold = 4, mergeTo="largest"){
+merge_small_polys <- function(polys, file){
 
   start_time <- Sys.time()
   if ("geom" %in% names(polys)) {
@@ -451,17 +492,17 @@ merge_small_polys <- function(polys, area_threshold = 4, mergeTo="largest"){
     rename(geometry = geom)
   }
 
-  small_polys_start <- polys %>% filter(area < area_threshold)
+  small_polys_start <- polys %>% dplyr::filter(area < config$area_threshold)
   start_length <- length(small_polys_start$area)
   last_printed <- -1 
   idx <- 1
   repeat {
     idx <- idx +1
-    small_polys <- polys %>% filter(area < area_threshold)
+    small_polys <- polys %>% dplyr::filter(area < config$area_threshold)
     if (nrow(small_polys) == 0) break # end if no more small polys left
 
     remaining_pct <- round(nrow(small_polys) / start_length * 100)
-    if (remaining_pct %% 10 == 0) {
+    if (remaining_pct %% 10 == 0 && remaining_pct != last_printed) {
       print(glue("{100 - remaining_pct}% completed at {format(Sys.time(), '%H:%M:%S')}"))
       last_printed <- remaining_pct
     }
@@ -470,7 +511,7 @@ merge_small_polys <- function(polys, area_threshold = 4, mergeTo="largest"){
     smallest_id <- which.max(st_equals(polys, smallest, sparse = FALSE)) # selects first only first match of smallest area if two are equally small
     # identify neighbor to merge
     
-    if (mergeTo == "largest"){
+    if (config$integration_method == "byArea"){
       relate_result <- st_relate(polys[smallest_id, ], polys, pattern = "F***1****")[[1]]
       largest_neighbor_id <- relate_result[which.max(polys$area[relate_result])]
       merge_with_id <- largest_neighbor_id
@@ -519,23 +560,22 @@ merge_small_polys <- function(polys, area_threshold = 4, mergeTo="largest"){
   }
   # merge neighbouring slope zones with same orientation
   slope_polygons_merged <- polys %>%
-    group_by(focal_modal) %>%
+    group_by(orientation) %>%
     summarise(geometry = st_union(geometry), .groups = 'drop') %>%
     { lapply(1:nrow(.), function(i) {
       st_cast(.[i, ], "POLYGON")
     }) } %>%
-    do.call(rbind, .)
+    do.call(rbind, .) %>% 
+    mutate(area = as.numeric(st_area(geometry)) / 1e6) 
 
   end_time <- Sys.time()
+  print("############")
+  st_write(slope_polygons_merged, here("data", test_region_name, "szerencsits", glue("{file}_{config$integration_method}.gpkg")), delete_dsn =TRUE, quiet = show_message)
   cat("Duration:", round(difftime(end_time, start_time, units="secs"), 1), "seconds\n")
-  return(slope_polygons_merged)
 }
 
-merged_polys_byArea <- merge_small_polys(slope_polygons)
-merged_polys_byEdge <- merge_small_polys(slope_polygons, mergeTo = "longest") # Duration : 
-st_write(merged_polys_byArea, here("data", test_region_name, "szerencsits", "04_slope_zones_merged_byArea.gpkg"), delete_dsn =TRUE)
-st_write(merged_polys_byEdge, here("data", test_region_name, "szerencsits", "04_slope_zones_merged_byEdge.gpkg"), delete_dsn =TRUE)
-merged_polys <- st_read(here("data", test_region_name, "szerencsits", "04_slope_zones_merged_byArea.gpkg"))
+merge_small_polys(slope_polygons, file ="04_slope_zones_merged")
+merged_polys <- st_read(file.path(run_folder, glue("04_slope_zones_merged_{config$integration_method}.gpkg"))) 
 
 # catchment area preparation
 catchment_areas <- st_read(here("data", "source_data", "einzugsgebiete_40km.gpkg")) %>% st_zm() 
@@ -543,28 +583,24 @@ catchment_areas_test_region <- st_intersection(catchment_areas, test_region) %>%
   filter(st_geometry_type(.) %in% c("POLYGON", "MULTIPOLYGON")) 
 
 # intersect slopes with catchments
-slope_catchment_intersection <- st_intersection(merged_polys, catchment_areas_test_region) %>% st_collection_extract("POLYGON") %>% st_cast("POLYGON") %>% select(focal_modal)
+slope_catchment_intersection <- st_intersection(merged_polys, catchment_areas_test_region) %>% st_collection_extract("POLYGON") %>% st_cast("POLYGON") %>% select(orientation)
 slope_catchment_intersection$area <- as.numeric(st_area(slope_catchment_intersection) / 1e6)
-st_write(slope_catchment_intersection, here("data", test_region_name, author, "05_slope_catchment_intersection.gpkg"), delete_dsn =TRUE)
-slope_catchment_intersection <- st_read(here("data", test_region_name, author, "05_slope_catchment_intersection.gpkg"))
+st_write(slope_catchment_intersection, file.path(run_folder, "05_slope_catchment_intersection.gpkg"), delete_dsn =TRUE, quiet = show_message)
+slope_catchment_intersection <- st_read(file.path(run_folder, "05_slope_catchment_intersection.gpkg"))
 
 # integrate small polygons into larger ones
-merged_polys_catchm_intersection_largestArea <- merge_small_polys(slope_catchment_intersection)
-merged_polys_catchm_intersection_longestEdge <- merge_small_polys(slope_catchment_intersection, mergeTo = "longest")
-st_write(merged_polys_catchm_intersection_largestArea, here("data", test_region_name, author, "05a_slope_catchment_intersection_merged_byArea.gpkg"), delete_dsn =TRUE)
-st_write(merged_polys_catchm_intersection_longestEdge, here("data", test_region_name, author, "05a_slope_catchment_intersection_merged_byEdge.gpkg"), delete_dsn =TRUE)
+merge_small_polys(slope_catchment_intersection, file = "05a_slope_catchment_intersection_merged")
 
-####################################################################################
-####################### forest altitude analysis ###################################
-####################################################################################
+
+####################### forest/tree altitude analysis ###################################
 
 ####################### slope zone analysis ########################################
 slope_zone_analysis <- function() {
   
   # Read data
-  forest <- rast(here("data", test_region_name, author, "00_forest.tif"))
-  tree <- rast(here("data", test_region_name, author, "00_trees.tif"))
-  dem_final <- rast(here("data", test_region_name, author, "01_dem_final.tif"))
+  forest <- rast(file.path(run_folder, "00_forest.tif"))
+  tree <- rast(file.path(run_folder, "00_trees.tif"))
+  dem_final <- rast(file.path(run_folder, "01_dem_final.tif"))
   
   # Create masks and extract elevation at vegetation locations
   forest_mask <- forest == 1
@@ -573,11 +609,11 @@ slope_zone_analysis <- function() {
   alt_trees_masked <- mask(dem_final, tree_mask, maskvalue = FALSE)
   
   # Write masked elevation rasters
-  writeRaster(alt_forest_masked, here("data", test_region_name, author, "06_forest_altitude.tif"), overwrite = TRUE)
-  writeRaster(alt_trees_masked, here("data", test_region_name, author, "06_trees_altitude.tif"), overwrite = TRUE)
+  writeRaster(alt_forest_masked, file.path(run_folder, "06_forest_altitude.tif"), overwrite = TRUE)
+  writeRaster(alt_trees_masked, file.path(run_folder, "06_trees_altitude.tif"), overwrite = TRUE)
   
   # Read slope zones
-  slope_zone_final_vect <- vect(st_read(here("data", test_region_name, author, "05a_slope_catchment_intersection_merged_byArea.gpkg")))
+  slope_zone_final_vect <- vect(st_read(file.path(run_folder, glue("05a_slope_catchment_intersection_merged_{config$integration_method}.gpkg"))))
   
   # Calculate max elevation values per slope zone
   max_vals_forest <- terra::extract(alt_forest_masked, slope_zone_final_vect, fun = max, na.rm = TRUE)
@@ -585,13 +621,14 @@ slope_zone_analysis <- function() {
   
   # Attach to vector and rasterize
   slope_zone_final_vect$max_vals_forest <- max_vals_forest[, 2] 
+  test <- slope_zone_final_vect %>% st_as_sf()
   slope_zone_final_vect$max_vals_trees <- max_vals_trees[, 2]
   slope_zone_max_forest <- terra::rasterize(slope_zone_final_vect, alt_forest_masked, field = "max_vals_forest")
   slope_zone_max_trees <- terra::rasterize(slope_zone_final_vect, alt_trees_masked, field = "max_vals_trees")
   
   # Write max elevation rasters
-  writeRaster(slope_zone_max_forest, here("data", test_region_name, author, "07_slope_zone_max_alt_forest.tif"), overwrite = TRUE)
-  writeRaster(slope_zone_max_trees, here("data", test_region_name, author, "07_slope_zone_max_alt_trees.tif"), overwrite = TRUE)
+  writeRaster(slope_zone_max_forest, file.path(run_folder, "07_slope_zone_max_alt_forest.tif"), overwrite = TRUE)
+  writeRaster(slope_zone_max_trees, file.path(run_folder, "07_slope_zone_max_alt_trees.tif"), overwrite = TRUE)
   
   # Calculate differences and binary treeline
   slope_zone_diff_forest <- dem_final - slope_zone_max_forest
@@ -600,77 +637,104 @@ slope_zone_analysis <- function() {
   slope_zone_diff_binary_trees <- slope_zone_diff_trees < 0
   
   # Write final outputs
-  writeRaster(slope_zone_diff_forest, here("data", test_region_name, author, "08_slope_zone_diff_forest.tif"), overwrite = TRUE)
-  writeRaster(slope_zone_diff_trees, here("data", test_region_name, author, "08_slope_zone_diff_trees.tif"), overwrite = TRUE)
-  writeRaster(slope_zone_diff_binary_forest, here("data", test_region_name, author, "09_slope_zone_diff_binary_forest.tif"), overwrite = TRUE)
-  writeRaster(slope_zone_diff_binary_trees, here("data", test_region_name, author, "09_slope_zone_diff_binary_trees.tif"), overwrite = TRUE)
+  writeRaster(slope_zone_diff_forest, file.path(run_folder, "08_slope_zone_diff_forest.tif"), overwrite = TRUE)
+  writeRaster(slope_zone_diff_trees, file.path(run_folder, "08_slope_zone_diff_trees.tif"), overwrite = TRUE)
+  writeRaster(slope_zone_diff_binary_forest, file.path(run_folder, "09_slope_zone_diff_binary_forest.tif"), overwrite = TRUE)
+  writeRaster(slope_zone_diff_binary_trees, file.path(run_folder, "09_slope_zone_diff_binary_trees.tif"), overwrite = TRUE)
   
   cat("Slope analysis complete for", test_region_name, "\n")
 }
-
 slope_zone_analysis()
 
 ####################### moving window analysis #####################################
 
-# Read the altitude rasters
-altitude_forest <- rast(here("data", test_region_name, author, "06_forest_altitude.tif"))
-altitude_trees <- rast(here("data", test_region_name, author, "06_trees_altitude.tif"))
+moving_window_analysis <- function() {
+  
+  # Read the altitude rasters
+  altitude_forest <- rast(file.path(run_folder, "06_forest_altitude.tif"))
+  altitude_trees <- rast(file.path(run_folder, "06_trees_altitude.tif"))
+  
+  # Create circular weight matrix for 1000m radius
+  weight_matrix <- focalMat(altitude_forest, d = 1000, type = "circle")
+  weight_matrix[weight_matrix > 0] <- 1 
+  
+  # Apply focal maximum with 1000m radius
+  focal_max_forest <- focal(altitude_forest, w = weight_matrix, fun = max, na.rm = TRUE)
+  focal_max_trees <- focal(altitude_trees, w = weight_matrix, fun = max, na.rm = TRUE)
+  focal_max_forest[focal_max_forest == 0] <- NA
+  focal_max_trees[focal_max_trees == 0] <- NA
+  
+  # Write results
+  writeRaster(focal_max_forest, file.path(run_folder, "10_forest_altitude_focal_max_1000m.tif"), overwrite = TRUE)
+  writeRaster(focal_max_trees, file.path(run_folder, "10_trees_altitude_focal_max_1000m.tif"), overwrite = TRUE)
+  
+  dem_final <- rast(file.path(run_folder, "01_dem_final.tif"))
+  mov_window_diff_forest <- dem_final - focal_max_forest
+  mov_window_diff_trees <- dem_final - focal_max_trees
+  
+  writeRaster(mov_window_diff_forest, here("data", test_region_name, "szerencsits", "11_mov_window_diff_forest.tif"), overwrite = TRUE)
+  writeRaster(mov_window_diff_trees, here("data", test_region_name, "szerencsits", "11_mov_window_diff_trees.tif"), overwrite = TRUE)
+  
+  mov_window_diff_binary_forest <- mov_window_diff_forest < 0
+  mov_window_diff_binary_trees <- mov_window_diff_trees < 0
+  
+  writeRaster(mov_window_diff_binary_forest, here("data", test_region_name, "szerencsits", "12_mov_window_diff_binary_forest.tif"), overwrite = TRUE)
+  writeRaster(mov_window_diff_binary_trees, here("data", test_region_name, "szerencsits", "12_mov_window_diff_binary_trees.tif"), overwrite = TRUE)
+  
+}
+moving_window_analysis()
 
-# Calculate window size in pixels (radius = 1000m)
-cell_size <- res(altitude_forest)[1]  # assuming square pixels
-window_radius_pixels <- round(1000 / cell_size)
-window_size <- 2 * window_radius_pixels + 1  # full diameter + center pixel
+####################### combine analysis #####################################
+combine_and_polygonize <- function() {
+  
+  # Read slope zone rasters
+  slope_zone_diff_binary_forest <- rast(file.path(run_folder, "09_slope_zone_diff_binary_forest.tif"))
+  slope_zone_diff_binary_trees <- rast(file.path(run_folder, "09_slope_zone_diff_binary_trees.tif"))
+  mov_window_diff_binary_forest <- rast(file.path(run_folder, "12_mov_window_diff_binary_forest.tif"))
+  mov_window_diff_binary_trees <- rast(file.path(run_folder, "12_mov_window_diff_binary_trees.tif"))
+  
+  # Forest combination
+  sum_raster_forest <- sum(mov_window_diff_binary_forest, slope_zone_diff_binary_forest, na.rm = TRUE)
+  combined_forest <- app(sum_raster_forest, function(x) ifelse(x >= 1, 1, 0))
+  
+  # Trees combination  
+  sum_raster_trees <- sum(mov_window_diff_binary_trees, slope_zone_diff_binary_trees, na.rm = TRUE)
+  combined_trees <- app(sum_raster_trees, function(x) ifelse(x >= 1, 1, 0))
+  
+  # Write combined rasters
+  writeRaster(combined_forest, file.path(run_folder, "13_combined_forest.tif"), overwrite = TRUE)
+  writeRaster(combined_trees, file.path(run_folder, "13_combined_trees.tif"), overwrite = TRUE)
+  
+  # Polygonize and filter small polygons
+  forest_filtered <- classify(combined_forest, cbind(0, NA))
+  tree_filtered <- classify(combined_trees, cbind(0, NA))
+  
+  forest_polys <- as.polygons(forest_filtered, dissolve=TRUE)
+  tree_polys <- as.polygons(tree_filtered, dissolve=TRUE)
+  
+  forest_polys_sf <- st_as_sf(forest_polys) %>% st_cast("POLYGON") %>% st_make_valid() 
+  tree_polys_sf <- st_as_sf(tree_polys) %>% st_cast("POLYGON") %>% st_make_valid()
+  
+  forest_polys_sf$area <- as.numeric(st_area(forest_polys_sf))
+  tree_polys_sf$area <- as.numeric(st_area(tree_polys_sf))
+  
+  forest_polys_sf_filtered <- forest_polys_sf %>% 
+    filter(area > 500000) %>%
+    st_remove_holes()
+  
+  tree_polys_sf_filtered <- tree_polys_sf %>% 
+    filter(area > 500000) %>%
+    st_remove_holes()
+  
+  # Write final results
+  st_write(forest_polys_sf_filtered, file.path(run_folder,"14_final_forestline.gpkg"), delete_dsn=TRUE, quiet = show_message)
+  st_write(tree_polys_sf_filtered, file.path(run_folder,"14_final_treeline.gpkg"), delete_dsn=TRUE, quiet = show_message)
+  
+}
+combine_and_polygonize()
 
-# Create circular weight matrix for 1000m radius
-weight_matrix <- focalMat(altitude_forest, d = 1000, type = "circle")
-weight_matrix[weight_matrix > 0] <- 1 
-
-# Apply focal maximum with 1000m radius
-focal_max_forest <- focal(altitude_forest, w = weight_matrix, fun = max, na.rm = TRUE)
-focal_max_trees <- focal(altitude_trees, w = weight_matrix, fun = max, na.rm = TRUE)
-focal_max_forest[focal_max_forest == 0] <- NA
-focal_max_trees[focal_max_trees == 0] <- NA
-
-# Write results
-writeRaster(focal_max_forest, here("data", test_region_name, author, "10_forest_altitude_focal_max_1000m.tif"), overwrite = TRUE)
-writeRaster(focal_max_trees, here("data", test_region_name, author, "10_trees_altitude_focal_max_1000m.tif"), overwrite = TRUE)
-
-dem_final <- rast(here("data", test_region_name, author, "01_dem_final.tif"))
-mov_window_diff_forest <- dem_final - focal_max_forest
-mov_window_diff_trees <- dem_final - focal_max_trees
-
-writeRaster(mov_window_diff_forest, here("data", test_region_name, "szerencsits", "11_mov_window_diff_forest.tif"), overwrite = TRUE)
-writeRaster(mov_window_diff_trees, here("data", test_region_name, "szerencsits", "11_mov_window_diff_trees.tif"), overwrite = TRUE)
-
-mov_window_diff_binary_forest <- mov_window_diff_forest < 0
-mov_window_diff_binary_trees <- mov_window_diff_trees < 0
-writeRaster(mov_window_diff_binary_forest, here("data", test_region_name, "szerencsits", "12_mov_window_diff_binary_forest.tif"), overwrite = TRUE)
-writeRaster(mov_window_diff_binary_trees, here("data", test_region_name, "szerencsits", "12_mov_window_diff_binary_trees.tif"), overwrite = TRUE)
-
-
-# combine moving window and slope and polygonize
-# Forest combination movin
-sum_raster_forest <- mov_window_diff_binary_forest + slope_zone_diff_binary_forest
-combined_forest <- app(sum_raster_forest, function(x) ifelse(x >= 1, 1, 0))
-
-ext(mov_window_diff_binary_forest)
-ext(slope_zone_diff_binary_forest)
-
-# Trees combination  
-sum_raster_trees <- mov_window_diff_binary_trees + slope_zone_diff_binary_trees
-combined_trees <- app(sum_raster_trees, function(x) ifelse(x >= 1, 1, 0))
-
-
-combined_rast <- rast(here("data", test_region_name, "szerencsits", "final_binary_treeline.tif"))
-r_filtered <- classify(combined_rast, cbind(0, NA))
-
-combined_polys <- as.polygons(r_filtered, dissolve=TRUE)
-
-combined_polys_sf <- st_as_sf(combined_polys) %>% st_cast("POLYGON") %>% st_make_valid() 
-combined_polys_sf$area <- as.numeric(st_area(combined_polys_sf))
-combined_polys_sf_filtered <- combined_polys_sf %>% filter(area > 500000)
-st_write(combined_polys_sf_filtered, here("data", test_region_name, "szerencsits","final_treeline.gpkg"), delete_dsn=TRUE)
-
+end_time <- Sys.time()
+cat("Duration:", round(difftime(end_time, start_time, units="secs"), 1), "seconds\n")
 ```
 
 # Ngyuen 2025 method
