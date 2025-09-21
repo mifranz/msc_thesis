@@ -26,6 +26,10 @@ library(exactextractr)
 library(lwgeom)
 library(units)
 library(smoothr)
+library(mgcv)
+library(gstat)
+library(sp)
+library(geostats)
 conflict_prefer("filter", "dplyr")
 conflict_prefer("select", "dplyr")
 
@@ -35,7 +39,7 @@ conflict_prefer("select", "dplyr")
 
 ```{r}
 # initialising variables
-test_region_name <- "test_region_4"
+test_region_name <- "test_region_2_small"
 test_region <- st_read(here("data", test_region_name, glue("{test_region_name}.gpkg")))
 
 forest_name <- "swisstopo_all_forest"
@@ -137,6 +141,7 @@ preprocess_arealstatistik <- function() {
   ]
   st_write(arealstatistik_above_1000, here("data", "processed_data", "arealstatistik_forest_trees_above_1000m.gpkg"), delete_dsn = TRUE)
 }
+preprocess_arealstatistik()
 ```
 
 # create forest test region files
@@ -840,8 +845,6 @@ get_forest_elevations<- function() {
   st_write(arealstat_testregion_forest, file.path(run_folder, "02_arealstat_testregion_forest.gpkg"), delete_dsn = TRUE)
   arealstat_testregion_forest <- st_read(file.path(run_folder, "02_arealstat_testregion_forest.gpkg"))
   
-
-  
   # Create 50m buffer to represent 100m cells (radius = side/2)
   dem25 <- rast(here("data", test_region_name, "DEM_25m.tif"))
   arealstat_testregion_forest_cells <- arealstat_testregion_forest %>% 
@@ -852,17 +855,49 @@ get_forest_elevations<- function() {
   forest_ext <- ext(arealstat_testregion_forest_cells)
   new_raster <- rast(ext = forest_ext, resolution = 100, crs = crs(dem25))
   forest_mask_100m <- rasterize(arealstat_testregion_forest_cells, new_raster, field = 1, touches = FALSE)
-  dem_forest_100m <- resample(dem25, new_raster, method = "bilinear")
+  dem_100m <- resample(dem25, new_raster, method = "bilinear")
+  writeRaster(dem_100m, file.path(run_folder, "03_dem_100m.tif"), overwrite = TRUE)
 
   # Mask DEM with forest locations
-  dem_forest_only_100m <- mask(dem_forest_100m, forest_mask_100m)
+  dem_forest_only_100m <- mask(dem_100m, forest_mask_100m)
   
   # Write outputs
-  writeRaster(dem_forest_only_100m, file.path(run_folder, "03_dem_forest_only_100m.tif"), overwrite = TRUE)
+  writeRaster(dem_forest_only_100m, file.path(run_folder, "04_dem_forest_only_100m.tif"), overwrite = TRUE)
 }  
 get_forest_elevations()
 
-calculate_moving_window_max <- function() {
+moving_window_maxForest_local <- function(){
+
+  window_sizes <- c(500, 600, 700, 800, 900, 1000, 1100, 1200, 1500, 3000) # in meters
+  
+  dem_forest_only <- rast(file.path(run_folder, "04_dem_forest_only_100m.tif"))
+
+  window_size <- 900
+  for (window_size in window_sizes) {
+    # Calculate cells per side for this window size
+    cells_per_side <- round(window_size / config$resolution) 
+    # Ensure odd number for focal function
+    if (cells_per_side %% 2 == 0) {
+      cells_per_side <- cells_per_side + 1
+    }
+
+    weight_matrix <- matrix(1, nrow = cells_per_side, ncol = cells_per_side)
+    
+    # Calculate highest forest elevations within window
+    focal_max_forest <- focal(dem_forest_only, w = weight_matrix, fun = max, na.rm = TRUE)
+    focal_max_forest[focal_max_forest == 0] <- NA
+    focal_max_forest_mask <- mask(focal_max_forest, dem_forest_only)
+    
+    # Write file with window size in filename
+    filename <- file.path(run_folder, paste0("05a_local_max_forest_masked_", window_size, "m.tif"))
+    writeRaster(focal_max_forest_mask, filename, overwrite = TRUE)
+    filename <- file.path(run_folder, paste0("05a_local_max_forest_", window_size, "m.tif"))
+    writeRaster(focal_max_forest, filename, overwrite = TRUE)
+  }
+}
+moving_window_maxForest_local()
+
+moving_window_maxForest_regional <- function() {
   # Moving window max within 10km window
   cells_per_side <- round(config$grid_resolution / config$resolution)  # 10000m / 100m = 400 cells
   # Ensure odd number for focal function
@@ -871,17 +906,17 @@ calculate_moving_window_max <- function() {
   }
   weight_matrix <- matrix(1, nrow = cells_per_side, ncol = cells_per_side)
   
-  dem_forest_only <- rast(file.path(run_folder, "03_dem_forest_only_100m.tif"))
+  dem_forest_only <- rast(file.path(run_folder, "04_dem_forest_only_100m.tif"))
   # calculate highest forest elevations within window
   focal_max_forest <- focal(dem_forest_only, w = weight_matrix, fun = max, na.rm = TRUE)
   focal_max_forest[focal_max_forest == 0] <- NA
   focal_max_forest <- mask(focal_max_forest, dem_forest_only)
-  writeRaster(focal_max_forest, file.path(run_folder, "04_focal_max_forest_10km.tif"), overwrite = TRUE)
+  writeRaster(focal_max_forest, file.path(run_folder, "06_regional_max_forest.tif"), overwrite = TRUE)
   
 }
-calculate_moving_window_max()
+moving_window_maxForest_regional()
 
-calculate_moving_window_max_land <- function() {
+moving_window_maxLand_regional_land <- function() {
   cells_per_side <- round(config$grid_resolution / config$resolution)   # 5km radius for 10km window
   if (cells_per_side %% 2 == 0) {
     cells_per_side <- cells_per_side + 1
@@ -889,20 +924,120 @@ calculate_moving_window_max_land <- function() {
   weight_matrix <- matrix(1, nrow = cells_per_side, ncol = cells_per_side)
   
   arealstat_testregion_forest_cells <- st_read(file.path(run_folder, "02a_arealstat_testregion_forest_cells.gpkg"))
-  dem_forest_only <- rast(file.path(run_folder, "03_dem_forest_only_100m.tif"))
+  dem_forest_only <- rast(file.path(run_folder, "04_dem_forest_only_100m.tif"))
   dem25_buffer <- rast(here("data", test_region_name, "DEM_25m_buffer_50.tif"))
   
   dem_ext <- ext(dem25_buffer)
   new_raster <- rast(ext = dem_ext, resolution = 100, crs = crs(dem25_buffer))
   
   dem_100m <- resample(dem25_buffer, new_raster, method = "bilinear")
-  writeRaster(dem_100m, file.path(run_folder, "DEM_100m_buffer_50.tif"), overwrite = TRUE)
+  writeRaster(dem_100m, file.path(run_folder, "07_DEM_100m_buffer_50.tif"), overwrite = TRUE)
   focal_max_land <- focal(dem_100m, w = weight_matrix, fun = max, na.rm = TRUE)
 
   focal_max_land_aligned <- resample(focal_max_land, dem_forest_only, method = "bilinear")
   rwrite(focal_max_land_aligned)
   focal_max_land_masked <- mask(focal_max_land_aligned, dem_forest_only)
-  writeRaster(focal_max_land_masked, file.path(run_folder, "04_focal_max_land_10km.tif"), overwrite = TRUE)
+  writeRaster(focal_max_land_masked, file.path(run_folder, "08_regional_max_land.tif"), overwrite = TRUE)
+  points <- as.points(focal_max_land_masked, na.rm = TRUE) %>% st_as_sf()
+  vwrite(points, appendix = "regional_max_land_points")
+}
+moving_window_maxLand_regional_land()
+
+# only relevant in lower elevated areas where forest can be found on mountain tops
+remove_mountain_top_forest <- function(){
+  max_forest <- rast(file.path(run_folder, "06_regional_max_forest.tif"))
+  max_land <- rast(file.path(run_folder, "08_regional_max_land.tif"))
+  
+  elevation_diff <- max_land - max_forest
+  forest_mask <- elevation_diff > 0
+  filtered_forest <- max_forest * forest_mask
+  writeRaster(filtered_forest, file.path(run_folder, "08_regional_max_forest_filtered.tif"), overwrite = TRUE)
+}
+remove_mountain_top_forest()
+
+# interpolation
+interpolate_spline <- function(){
+  forest_cells <- rast(file.path(run_folder, "08_regional_max_forest_filtered.tif"))
+  # Extract points from filtered raster
+  points_df <- as.data.frame(forest_cells, xy=TRUE, na.rm=TRUE)
+  # Convert coordinates to matrix
+  coords_matrix <- as.matrix(points_df[, c("x", "y")])
+  
+  # Fit with matrix coordinates
+  spline_model <- gam(focal_max ~ s(coords_matrix), data=points_df)
+  
+  ext <- ext(forest_cells)
+  res <- 10000  # 10km in meters
+  
+  # Create regular grid
+  x_seq <- seq(ext[1], ext[2], by = res)
+  y_seq <- seq(ext[3], ext[4], by = res)
+  pred_grid <- expand.grid(x = x_seq, y = y_seq)
+  
+  # Convert to matrix for prediction
+  pred_coords <- as.matrix(pred_grid[, c("x", "y")])
+  
+  # Predict treeline elevations
+  pred_values <- predict(spline_model, newdata = list(coords_matrix = pred_coords))
+  pred_values <- as.vector(pred_values)
+
+  # Convert back to raster
+  treeline_rast <- rast(ext = ext(forest_cells), 
+                  resolution = res,
+                  crs = crs(forest_cells))
+  values(treeline_rast) <- pred_values
+  ext(treeline_rast)
+  ext(forest_cells)
+  writeRaster(treeline_rast, file.path(run_folder, "09_interpolated_treeline_10km.tif"), overwrite = TRUE)
+}
+interpolate_spline()
+
+
+interpolate_kriging <- function(){
+  forest_cells <- rast(file.path(run_folder, "08_regional_max_forest_filtered.tif"))
+  
+  # Extract points
+  points_df <- as.data.frame(forest_cells, xy=TRUE, na.rm=TRUE)
+  n_sample <- min(2000, nrow(points_df))  # max 2000 points
+  points_df <- points_df[sample(nrow(points_df), n_sample), ]
+  # Fit semivariogram
+  svm <- semivariogram(points_df$x, points_df$y, points_df$focal_max)
+  
+  # Create prediction grid
+  ext <- ext(forest_cells)
+  res <- 10000
+  x_seq <- seq(ext[1], ext[2], by = res)
+  y_seq <- seq(ext[3], ext[4], by = res)
+  
+  # Krige with grid=TRUE
+  kriged_values <- kriging(x = points_df$x, y = points_df$y, z = points_df$focal_max,
+                          xi = x_seq, yi = y_seq, svm = svm, grid = TRUE)
+  
+  # Convert to raster
+  treeline_rast <- rast(xmin = min(x_seq), xmax = max(x_seq),
+                       ymin = min(y_seq), ymax = max(y_seq),
+                       resolution = res, crs = crs(forest_cells))
+  values(treeline_rast) <- as.vector(kriged_values)
+  
+  writeRaster(treeline_rast, file.path(run_folder, "09_interpolated_treeline_kriging.tif"), overwrite = TRUE)
+}
+
+
+
+treeline_calculation <- function(){
+  dem <- rast(file.path(run_folder, "03_dem_100m.tif"))
+  treeline_alt_local <- rast(file.path(run_folder, "05a_local_max_forest_900m.tif"))
+  treeline_alt_regional <- rast(file.path(run_folder, "09_interpolated_treeline_10km.tif"))
+  
+  treeline_local <- dem - treeline_alt_local
+  treeline_regional <- dem - treeline_alt_regional
+  rwrite(treeline_local)
+  
+  treeline_local_binary <- treeline_local < 0
+  treeline_regional_binary <- treeline_regional < 0
+  
+  writeRaster(treeline_local_binary, file.path(run_folder, "08a_treeline_local_binary.tif"), overwrite = TRUE)
+  writeRaster(treeline_regional_binary, file.path(run_folder, "08b_treeline_regional_binary.tif"), overwrite = TRUE)
 }
 ```
 
