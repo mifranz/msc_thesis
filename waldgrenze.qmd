@@ -30,8 +30,10 @@ library(mgcv)
 library(gstat)
 library(sp)
 library(geostats)
+library(RSAGA)
 conflict_prefer("filter", "dplyr")
 conflict_prefer("select", "dplyr")
+conflicts_prefer("here"::"here")
 
 ```
 
@@ -39,8 +41,8 @@ conflict_prefer("select", "dplyr")
 
 ```{r}
 # initialising variables
-test_region_name <- "test_region_2"
-test_region <- st_read(here("data", test_region_name, glue("{test_region_name}.gpkg")))
+test_region_name <- "test_region_4"
+test_region <- st_read(here("data", test_region_name, glue("{test_region_name}.gpkg"))) %>% st_zm()
 
 # test write
 vwrite <- function(df, appendix=""){
@@ -82,7 +84,7 @@ crop_to_clean_grid <- function(raster, test_region, resolution = 5) {
 # generate test region from einzugsgebiete only first time
 
 ```{r}
-new_name <- "test_region_6"
+new_name <- "test_region_4"
 einzug2km <- st_read(here("data", "source_data", "einzugsgebiete_2km.gpkg")) %>% st_zm()
 
 ids <- c(120594, 120407) # adjust as desired
@@ -110,7 +112,13 @@ dem_5m <- resample(dem, new_raster, method = "bilinear")
 dem5m_clean <- crop_to_clean_grid(dem_5m, test_region, resolution = 5)
 writeRaster(dem5m_clean, here("data", test_region_name,"DEM_5m.tif"), overwrite=TRUE)
 
-# process DEM 
+# clip DEM25 to test region
+dem25 <- rast("/Users/michafranz/Desktop/_Projekte/Geodaten/swisstopo/swissaltiregio_2056_5728.tif")
+dem25_test_region <- crop(dem25, test_region)
+dem25_test_region_masked <- mask(dem25_test_region, test_region)
+writeRaster(dem25_test_region_masked, here("data", test_region_name,"DEM_25m.tif"), overwrite=TRUE)
+
+# process DEM to ensure its extend fits to the test region
 preprocess_dem_clip_testregion <- function(res = 25) {
   dem <- rast("/Users/michafranz/Desktop/_Projekte/Geodaten/swisstopo/swissaltiregio_2056_5728.tif")
   dem_test_region <- crop(dem, test_region)
@@ -120,9 +128,8 @@ preprocess_dem_clip_testregion <- function(res = 25) {
   dem_25m_test_region_masked <- mask(dem_25m_test_region_cropped, test_region)
   writeRaster(dem_25m_test_region_masked, here("data", test_region_name, glue("DEM_{res}m.tif")), overwrite=TRUE)
 }
-preprocess_dem_clip_testregion(res = 100)
-res = 25
-bufferDist = 50
+
+# generate buffered DEM25 for test regions
 preprocess_dem_clip_testregion_bbox <- function(res = 25, bufferDist = 50) {
   dem <- rast("/Users/michafranz/Desktop/_Projekte/Geodaten/swisstopo/swissaltiregio_2056_5728.tif")
   
@@ -138,6 +145,12 @@ preprocess_dem_clip_testregion_bbox <- function(res = 25, bufferDist = 50) {
 }
 preprocess_dem_clip_testregion_bbox()
 
+
+```
+
+# one time functions
+```{r}
+# preprocess arealstatistik (runs only once, unless modified)
 preprocess_arealstatistik <- function() {
   # pre process arealstatistik general
   swiss_boundaries <- st_read("/Users/michafranz/Desktop/_Projekte/Geodaten/swisstopo/swissBOUNDARIES3D_1_5_LV95_LN02.gpkg", layer="tlm_landesgebiet") 
@@ -165,43 +178,8 @@ preprocess_arealstatistik <- function() {
   st_write(arealstatistik_above_1000, here("data", "processed_data", "arealstatistik_forest_trees_above_1000m.gpkg"), delete_dsn = TRUE)
 }
 preprocess_arealstatistik()
-```
 
-# create forest test region files
-
-```{r}
-# get forest area for test region
-forest <- st_read(here("data", "source_data" ,"swissTLM3D_BB_Wald.gpkg"))
-forest_name <- "swisstopo_forest"
-
-# intersect individual trees with test region
-# ONLY FOR REGIONS IN EASTERN SWITZERLAND
-swisstopo_trees <- st_read(here("data", "source_data" ,"swiss_TLM3D_Einzelbaum.gpkg")) %>%
-  st_zm() %>% 
-  st_transform(2056) %>% 
-  select(geometry)
-
-swisstopo_trees_test_region <- st_intersection(swisstopo_trees, test_region)
-st_write(swisstopo_trees_test_region, here("data", test_region_name, glue("{test_region_name}_swisstopo_trees.gpkg")), delete_dsn = TRUE)
-
-# generate and write forest intersection and its outline 
-get_forest <- function(forest, forest_name, test_region, test_region_name) {
-  
-  forest_intersection <- st_intersection(forest, test_region) %>% st_make_valid()
-  # mapview(forest_intersection)
-  
-  forest_outline <- forest_intersection %>%
-    st_cast("POLYGON", do_split = TRUE) %>%
-    st_make_valid() %>%
-    st_cast("LINESTRING") %>%
-    st_buffer(15)
-  
-  st_write(forest_intersection, here("data", test_region_name, glue("{test_region_name}_{forest_name}.gpkg")), delete_dsn = TRUE)
-  st_write(forest_outline, here("data", test_region_name, glue("{test_region_name}_{forest_name}_outline.gpkg")), delete_dsn = TRUE)
-}
-
-get_forest(forest, forest_name, test_region, test_region_name)
-
+# select and merge relevant layers from vector25 (runs only once, unless modified)
 process_vector25_szerencsits <- function(input_dir = here("data", "source_data", "vector25"),
                                        output_file = here("data", "processed_data", "SMV25_merged_szerencsits.gpkg")) {
   
@@ -257,11 +235,41 @@ process_vector25_szerencsits <- function(input_dir = here("data", "source_data",
 process_vector25_szerencsits()
 ```
 
+# create forest test region files
+```{r}
+
+# intersect individual trees with test region
+get_trees <- function(){
+  swisstopo_trees <- st_read(here("data", "source_data" ,"swiss_TLM3D_Einzelbaum.gpkg")) %>%
+    st_zm() %>% 
+    st_transform(2056) %>% 
+    select(geometry)
+  swisstopo_trees_test_region <- st_intersection(swisstopo_trees, test_region)
+  st_write(swisstopo_trees_test_region, here("data", test_region_name, glue("{test_region_name}_swisstopo_trees.gpkg")), delete_dsn = TRUE)
+}
+# get_trees()
+
+# generate and write forest intersection and its outline 
+get_forest <- function(forest = st_read(here("data", "source_data" ,"swissTLM3D_BB_Wald.gpkg")), dataset_name = "swisstopo_forest", test_region, test_region_name) {
+  
+  forest_intersection <- st_intersection(forest, test_region) %>% st_make_valid()
+  forest_outline <- forest_intersection %>%
+    st_cast("POLYGON", do_split = TRUE) %>%
+    st_make_valid() %>%
+    st_cast("LINESTRING") %>%
+    st_buffer(15)
+  
+  st_write(forest_intersection, here("data", test_region_name, glue("{test_region_name}_{dataset_name}.gpkg")), delete_dsn = TRUE)
+  st_write(forest_outline, here("data", test_region_name, glue("{test_region_name}_{dataset_name}_outline.gpkg")), delete_dsn = TRUE)
+}
+get_forest(forest, dataset_name, test_region, test_region_name)
+```
+
+
 # Paulsen and Körner 2001
 
 ```{r}
 author = "paulsen_koerner"
-start_time <- Sys.time()
 # initiate settings
 show_message <- FALSE
 
@@ -295,19 +303,20 @@ if (!dir.exists(run_folder)) {
   dir.create(run_folder, recursive = TRUE)
 }
 
+
+
 # Save config for reference
 writeLines(capture.output(dput(config)), file.path(run_folder, "config.txt"))
 paulsen_koerner_2001 <- function() {
+  start_time <- Sys.time()
   arealstatistik <- st_read(here("data", "processed_data", "arealstatistik_forest_trees_above_1000m.gpkg"))
   arealstat_testregion <- st_intersection(arealstatistik, test_region)
   arealstat_testregion_forest <- arealstat_testregion %>% 
-    filter(AS97_72 %in% config$trees_forest_categories_as97) %>% # 
+    filter(AS97_72 %in% config$trees_forest_categories_as97) %>%  
     select(geom)
   
   # Load and process DEM
-  dem_30m <- rast("/Users/michafranz/Desktop/_Projekte/Geodaten/switzerland_30m_DEM/swiss_DEM_30m.tif")
-  dem_cropped <- crop(dem_30m, test_region)
-  dem_masked <- mask(dem_cropped, test_region)
+  dem_masked <- rast(here("data", test_region_name,"DEM_25m.tif"))
   
   # Extract elevation for forest points
   arealstat_testregion_forest$elevation <- extract(dem_masked, arealstat_testregion_forest)[,2]
@@ -334,7 +343,7 @@ paulsen_koerner_2001 <- function() {
     inner_join(max_elevation_point_per_grid, by = "grid_id")
   
   # Get highest dem elevation per grid cell and apply filters
-  extracted_values <- extract(dem_30m, grid_10km_max_elev, fun = max, na.rm = TRUE)
+  extracted_values <- extract(dem_masked, grid_10km_max_elev, fun = max, na.rm = TRUE)
   grid_10km_max_elev$max_elevation <- extracted_values[, 2] 
   grid_10km_max_elev$difference <- grid_10km_max_elev$max_elevation - grid_10km_max_elev$max_forest_elevation
 
@@ -365,7 +374,7 @@ paulsen_koerner_2001 <- function() {
   # Write all output files
   st_write(arealstat_testregion, file.path(run_folder,"01_arealstat_testregion.gpkg"), delete_dsn = TRUE)
   st_write(arealstat_testregion_forest, file.path(run_folder,"02_arealstat_testregion_forest.gpkg"), delete_dsn = TRUE)
-  writeRaster(dem_masked, file.path(run_folder,"03_DEM_30m.tif"), overwrite = TRUE)
+  writeRaster(dem_masked, file.path(run_folder,"03_DEM_25m.tif"), overwrite = TRUE)
   st_write(arealstat_testregion_forest_join, file.path(run_folder,"04_arealstat_forest_testregion_join.gpkg"), delete_dsn = TRUE)
   st_write(grid_10km, file.path(run_folder,"05_grid_10km.gpkg"), delete_dsn = TRUE)
   st_write(arealstat_testregion_forest_join_max_elevation, file.path(run_folder,"06_arealstat_forest_testregion_max_elev.gpkg"), delete_dsn = TRUE)
@@ -376,6 +385,8 @@ paulsen_koerner_2001 <- function() {
 }
 
 paulsen_koerner_2001()
+end_time <- Sys.time()
+cat("Duration:", round(difftime(end_time, start_time, units="secs"), 1), "seconds\n")
 ```
 
 # Szerencsits 2012
@@ -936,8 +947,15 @@ moving_window_maxForest_regional <- function() {
   focal_max_forest <- focal(dem_forest_only, w = weight_matrix, fun = max, na.rm = TRUE)
   focal_max_forest[focal_max_forest == 0] <- NA
   writeRaster(focal_max_forest, file.path(run_folder, "06a_regional_max_forest.tif"), overwrite = TRUE)
+
   focal_max_forest <- mask(focal_max_forest, dem_forest_only)
   writeRaster(focal_max_forest, file.path(run_folder, "06b_regional_max_forest_masked.tif"), overwrite = TRUE)
+  focal_max_forest <- rast(file.path(run_folder, "06b_regional_max_forest_masked.tif"))
+  highest_pixel <- focal_max_forest-dem_forest_only
+  highest_pixel_vect <- as.points(highest_pixel, values = TRUE, na.rm = TRUE) %>% st_as_sf() #%>% filter(focal_max == 0)
+  elevation_values <- extract(focal_max_forest, highest_pixel_vect)
+  highest_pixel_vect$elevation <- elevation_values[,2]
+  st_write(highest_pixel_vect, file.path(run_folder, "06c_regional_max_forest_highest.shp"), delete_dsn = TRUE)
   
 }
 moving_window_maxForest_regional()
@@ -981,7 +999,35 @@ remove_mountain_top_forest <- function(){
 }
 remove_mountain_top_forest()
 
+
+
+
 # interpolation
+# SAGA
+treeline_with_elev <- rsaga.add.grid.values.to.points(
+  in.shapefile = file.path(run_folder, "06c_regional_max_forest_highest.shp"),
+  in.grids = file.path(run_folder, "04_dem_forest_only_100m.tif"), 
+  out.shapefile = file.path(run_folder, "07_spline.shp"),
+  method = "bicubic.spline"
+)
+
+highest_pixel_vect_subset <- highest_pixel_vect %>% 
+  slice_sample(n = 500)
+
+coords <- st_coordinates(highest_pixel_vect_subset)
+elevation_values <- highest_pixel_vect_subset$elevation
+
+# Fit the spline model
+spline_fit <- Tps(x = coords, Y = elevation_values)
+
+dem_10km <- aggregate(dem_forest_only, fact = 100, fun = mean, na.rm = TRUE)
+dem <- dem_forest_only
+target_coords <- xyFromCell(dem, 1:ncell(dem))
+interpolated_values <- predict(spline_fit, target_coords)
+interpolated_raster <- dem
+values(interpolated_raster) <- interpolated_values
+rwrite(interpolated_raster)
+
 interpolate_spline <- function(){
   forest_cells <- rast(file.path(run_folder, "08_regional_max_forest_filtered.tif"))
   # Extract points from filtered raster
@@ -1047,8 +1093,6 @@ interpolate_kriging <- function(){
   
   writeRaster(treeline_rast, file.path(run_folder, "09_interpolated_treeline_kriging.tif"), overwrite = TRUE)
 }
-
-
 
 treeline_calculation <- function(){
   dem <- rast(file.path(run_folder, "03_dem_100m.tif"))
@@ -1317,7 +1361,7 @@ generate_delaunay <- function(points_sf){
   return(triangulated_sf)
 }
 
-st_write(generate_delaunay(points_sf), here("data", test_region_name, forest_name,"swisstopo_all_forest_points_delaunay.gpkg"), delete_dsn=TRUE)
+st_write(generate_delaunay(points_sf), here("data", test_region_name, dataset_name,"swisstopo_all_forest_points_delaunay.gpkg"), delete_dsn=TRUE)
 
 ```
 
@@ -1327,7 +1371,7 @@ st_write(generate_delaunay(points_sf), here("data", test_region_name, forest_nam
 
 
 # different inputs
-swisstopo_testregion <- st_read(here("data", test_region_name, glue("{test_region_name}_{forest_name}_outline.gpkg")))
+swisstopo_testregion <- st_read(here("data", test_region_name, glue("{test_region_name}_{dataset_name}_outline.gpkg")))
 swisstopo_trees_test_region <- st_read(here("data", test_region_name, "swisstopo_trees_test_region_1.gpkg")) %>% select(geom)
 
 # exists only after generate hull algo has run for this parent file
