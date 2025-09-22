@@ -39,10 +39,8 @@ conflict_prefer("select", "dplyr")
 
 ```{r}
 # initialising variables
-test_region_name <- "test_region_2_small"
+test_region_name <- "test_region_2"
 test_region <- st_read(here("data", test_region_name, glue("{test_region_name}.gpkg")))
-
-forest_name <- "swisstopo_all_forest"
 
 # test write
 vwrite <- function(df, appendix=""){
@@ -55,15 +53,39 @@ rwrite <- function(raster, appendix=""){
   writeRaster(raster, here("data", "test", glue("testing_{time}_{appendix}.tif")), overwrite=TRUE)
 }
 
+crop_to_clean_grid <- function(raster, test_region, resolution = 5) {
+  # Get test region extent
+  region_ext <- ext(test_region)
+  
+  # Round extent to clean grid boundaries
+  clean_ext <- ext(
+    floor(region_ext[1]/resolution) * resolution,    # xmin
+    ceiling(region_ext[2]/resolution) * resolution,  # xmax  
+    floor(region_ext[3]/resolution) * resolution,    # ymin
+    ceiling(region_ext[4]/resolution) * resolution   # ymax
+  )
+  
+  # Create template raster with clean grid
+  template <- rast(ext = clean_ext, resolution = resolution, crs = crs(raster))
+  
+  # Resample to template grid
+  raster_resampled <- resample(raster, template, method = "near")
+  
+  # Crop to test region (will maintain clean grid)
+  raster_cropped <- crop(raster_resampled, test_region)
+  
+  return(raster_cropped)
+}
+
 ```
 
-# generate test region from einzugsgebiete only first time 
+# generate test region from einzugsgebiete only first time
 
 ```{r}
-new_name <- "test_region_5"
+new_name <- "test_region_6"
 einzug2km <- st_read(here("data", "source_data", "einzugsgebiete_2km.gpkg")) %>% st_zm()
 
-ids <- c(120479) # adjust as desired
+ids <- c(120594, 120407) # adjust as desired
 selected_region <- einzug2km %>% filter(TEZGNR150 %in% ids) %>% st_union() %>% st_as_sf()
 
 if (!dir.exists(here("data",new_name ))) {
@@ -77,7 +99,7 @@ st_write(selected_region, here("data", new_name, glue("{new_name}.gpkg")), delet
 
 ```{r}
 # download and merge 2m DEM for testregion
-DEM_name = "DEM_25m"
+DEM_name = "DEM_2m"
 directory = here("data", test_region_name, DEM_name)
 download_and_merge_DEM(test_region, directory, "2", test_region_name)
 
@@ -85,7 +107,8 @@ download_and_merge_DEM(test_region, directory, "2", test_region_name)
 dem <- rast(here("data", test_region_name ,"DEM_2m",glue("merged_DEM_2m_", test_region_name, ".tif")))
 new_raster <- rast(ext = ext(dem), resolution = 5, crs = crs(dem))
 dem_5m <- resample(dem, new_raster, method = "bilinear")
-writeRaster(dem_5m, here("data", test_region_name,"DEM_5m.tif"), overwrite=TRUE)
+dem5m_clean <- crop_to_clean_grid(dem_5m, test_region, resolution = 5)
+writeRaster(dem5m_clean, here("data", test_region_name,"DEM_5m.tif"), overwrite=TRUE)
 
 # process DEM 
 preprocess_dem_clip_testregion <- function(res = 25) {
@@ -356,6 +379,7 @@ paulsen_koerner_2001()
 ```
 
 # Szerencsits 2012
+
 ```{r}
 start_time <- Sys.time()
 # initiate settings
@@ -793,6 +817,7 @@ cat("Duration:", round(difftime(end_time, start_time, units="secs"), 1), "second
 ```
 
 # Gehrig Fasel 2007
+
 ```{r}
 start_time <- Sys.time()
 # initiate settings
@@ -910,8 +935,9 @@ moving_window_maxForest_regional <- function() {
   # calculate highest forest elevations within window
   focal_max_forest <- focal(dem_forest_only, w = weight_matrix, fun = max, na.rm = TRUE)
   focal_max_forest[focal_max_forest == 0] <- NA
+  writeRaster(focal_max_forest, file.path(run_folder, "06a_regional_max_forest.tif"), overwrite = TRUE)
   focal_max_forest <- mask(focal_max_forest, dem_forest_only)
-  writeRaster(focal_max_forest, file.path(run_folder, "06_regional_max_forest.tif"), overwrite = TRUE)
+  writeRaster(focal_max_forest, file.path(run_folder, "06b_regional_max_forest_masked.tif"), overwrite = TRUE)
   
 }
 moving_window_maxForest_regional()
@@ -938,8 +964,8 @@ moving_window_maxLand_regional_land <- function() {
   rwrite(focal_max_land_aligned)
   focal_max_land_masked <- mask(focal_max_land_aligned, dem_forest_only)
   writeRaster(focal_max_land_masked, file.path(run_folder, "08_regional_max_land.tif"), overwrite = TRUE)
-  points <- as.points(focal_max_land_masked, na.rm = TRUE) %>% st_as_sf()
-  vwrite(points, appendix = "regional_max_land_points")
+  # points <- as.points(focal_max_land_masked, na.rm = TRUE) %>% st_as_sf()
+  # vwrite(points, appendix = "regional_max_land_points")
 }
 moving_window_maxLand_regional_land()
 
@@ -1041,67 +1067,211 @@ treeline_calculation <- function(){
 }
 ```
 
-
 # Ngyuen 2025 method
 
 ```{r}
-forest <- st_read(here("data", test_region_name, glue("{test_region_name}_swisstopo_forest.gpkg")))
-dem <- rast(here("data", test_region_name ,"DEM_5m.tif"))
+start_time <- Sys.time()
+# initiate settings
+show_message <- TRUE
+author <- "nguyen"
 
-# test dem
-dem_resample <- function(dem, res=10){
-  raster_prep <- rast(ext = ext(dem), resolution = res, crs = crs(dem))
-  new_dem <- resample(dem, raster_prep, method = "bilinear")
-  writeRaster(new_dem, here("data", test_region_name, "nguyen", glue("0_dem_{res}m.tif")), overwrite = TRUE)
-  return(new_dem)
+config <- list(
+  moving_window_fine = 50,
+  moving_window_coarse = 300,
+  min_elevation = 1750
+  )
+
+# Create hash for folder name based on config settings
+config_hash <- digest::digest(config, algo = "md5")
+run_folder <- here("data", test_region_name, author, paste0("run_", substr(config_hash, 1, 8)))
+
+if (!dir.exists(run_folder)) {
+  dir.create(run_folder, recursive = TRUE)
 }
 
-dem <- dem_resample(dem)
-
-get_forest_elevation <- function(dem, forest){
-  forest$cover <- 1
-  forest_rast <- rasterize(vect(forest), dem, field = "cover", background = NA)
-  forest_elev <- mask(dem, forest_rast)
-  writeRaster(forest_elev, here("data", test_region_name, "nguyen", "1_forest_elev.tif"), overwrite = TRUE)
-  return(forest_elev)
-}
-
-forest_elevation <- get_forest_elevation(dem, forest)
-
-# Create a circular (disk-shaped) window of a given radius
-# w1 <- focalMat(forest_elev, d = 30, type = "circle")
-# w2 <- focalMat(forest_elev, d = 600, type = "circle")
-
-calculate_moving_window <- function(forest_elev, window_size, treeline_type){ # should be a disk, not square --> to be modified
-  w_square <- matrix(1, window_size, window_size)
-  terraOptions(memfrac = 0.8)
-  forest_limit <- focal(forest_elev, w = w_square, fun = function(x) quantile(x, 0.899, na.rm = TRUE, names = FALSE), na.policy = "all")
-  writeRaster(forest_limit, here("data", test_region_name, "nguyen", "2_{treeline_type}_limit_rast.tif"), overwrite = TRUE)
-  return(forest_limit)
-}
-
-forest_limit_rast <- calculate_moving_window(forest_elevation, 11, "forestline") # window size depends on resolution
-timber_limit_rast <- calculate_moving_window(forest_elevation, 61, "timberline")
-
-forest_limit_rast <- rast(here("data", test_region_name, "nguyen", "forest_limit_rast.tif"))
-timber_limit_rast <- rast(here("data", test_region_name, "nguyen", "tree_limit_rast.tif"))
-
-generate_treeline <- function(dem, forest_limit, treeline_type){
-  dem_threshold <- dem
-  dem_threshold[dem_threshold < 1750] <- NA # remove areas below 1750 as stated in paper
-  diff_rast_forest <-  dem_threshold - forest_limit # find treeline area
-  writeRaster(diff_rast_forest, here("data", test_region_name, "nguyen", glue("3_diff_rast_{treeline_type}.tif")), overwrite = TRUE)
+# source_files <- here("data", "source_data", "nguyen")
+# base_year <- 2016
+calculate_composites <- function() {
+  # Define time windows
+  short_years <- (base_year-2):(base_year+2)  # 2015:2019
+  long_years <- (base_year-4):(base_year+4)   # 2013:2021
   
-  # generate mask
+  print(paste("Short window:", paste(short_years, collapse=", ")))
+  print(paste("Long window:", paste(long_years, collapse=", ")))
+  
+  # Check which files exist
+  available_years <- c()
+  for(year in long_years) {
+    pred_file <- file.path(source_files, paste0("predictions_", year, "_EPSG2056.tif"))
+    vote_file <- file.path(source_files, paste0("votes_", year, "_EPSG2056.tif"))
+    
+    if(file.exists(pred_file) & file.exists(vote_file)) {
+      available_years <- c(available_years, year)
+    }
+  }
+  
+  print(paste("Available years:", paste(available_years, collapse=", ")))
+  
+  # Create SHORT composite (2015-2019)
+  short_available <- base::intersect(short_years, available_years)
+  print(paste("Short composite using:", paste(short_available, collapse=", ")))
+  
+  # Load and crop rasters for short composite
+  short_preds <- list()
+  short_votes <- list()
+  
+  for(year in short_available) {
+    print(paste("Loading", year))
+    
+    pred_file <- file.path(source_files, paste0("predictions_", year, "_EPSG2056.tif"))
+    vote_file <- file.path(source_files, paste0("votes_", year, "_EPSG2056.tif"))
+    
+    pred_rast <- rast(pred_file)
+    vote_rast <- rast(vote_file)
+    
+    # Crop to test region
+    pred_cropped <- crop(pred_rast, test_region)
+    vote_cropped <- crop(vote_rast, test_region)
+    
+    short_preds[[length(short_preds)+1]] <- pred_cropped
+    short_votes[[length(short_votes)+1]] <- vote_cropped
+  }
+  
+  # Stack the rasters
+  short_pred_stack <- rast(short_preds)
+  short_vote_stack <- rast(short_votes)
+  print(paste("Short composite: stacked", nlyr(short_pred_stack), "prediction layers"))
+  
+  # Create the composite
+  short_composite <- app(c(short_pred_stack, short_vote_stack), function(x) {
+    n_years <- nlyr(short_pred_stack)
+    predictions <- x[1:n_years]
+    votes <- x[(n_years+1):(2*n_years)]
+    
+    # Remove invalid data
+    valid <- !is.na(predictions) & votes != 255
+    if(sum(valid) == 0) return(NA)
+    
+    # Find prediction with lowest uncertainty (lowest vote)
+    valid_preds <- predictions[valid]
+    valid_votes <- votes[valid]
+    
+    min_uncertainty <- min(valid_votes)
+    best_prediction <- valid_preds[which(valid_votes == min_uncertainty)[1]]
+    
+    return(best_prediction)
+  })
+  
+  # Save short composite
+  writeRaster(short_composite, file.path(run_folder, "C2017_short.tif"), overwrite=TRUE)
+  print("Short composite saved")
+  
+  # Now repeat for LONG composite (2013-2021)
+  long_available <- base::intersect(long_years, available_years)
+  print(paste("Long composite using:", paste(long_available, collapse=", ")))
+  
+  # Load rasters for long composite
+  long_preds <- list()
+  long_votes <- list()
+  
+  for(year in long_available) {
+    print(paste("Loading", year, "for long composite"))
+    
+    pred_file <- file.path(source_files, paste0("predictions_", year, "_EPSG2056.tif"))
+    vote_file <- file.path(source_files, paste0("votes_", year, "_EPSG2056.tif"))
+    
+    pred_rast <- rast(pred_file)
+    vote_rast <- rast(vote_file)
+    
+    pred_cropped <- crop(pred_rast, test_region)
+    vote_cropped <- crop(vote_rast, test_region)
+    
+    long_preds[[length(long_preds)+1]] <- pred_cropped
+    long_votes[[length(long_votes)+1]] <- vote_cropped
+  }
+  
+  # Stack and process long composite
+  long_pred_stack <- rast(long_preds)
+  long_vote_stack <- rast(long_votes)
+  print(paste("Long composite: stacked", nlyr(long_pred_stack), "prediction layers"))
+  
+  long_composite <- app(c(long_pred_stack, long_vote_stack), function(x) {
+    n_years <- nlyr(long_pred_stack)
+    predictions <- x[1:n_years]
+    votes <- x[(n_years+1):(2*n_years)]
+    
+    valid <- !is.na(predictions) & votes != 255
+    if(sum(valid) == 0) return(NA)
+    
+    valid_preds <- predictions[valid]
+    valid_votes <- votes[valid]
+    
+    min_uncertainty <- min(valid_votes)
+    best_prediction <- valid_preds[which(valid_votes == min_uncertainty)[1]]
+    
+    return(best_prediction)
+  })
+  
+  # Save long composite
+  writeRaster(long_composite, file.path(run_folder, "C2017_long.tif"), overwrite=TRUE)
+}
+
+forest_2020 <- rast(here("data", "source_data", "nguyen", "predictions_2020_EPSG2056.tif"))
+forest_2020_test_region <- crop_to_clean_grid(forest_2020, test_region)
+writeRaster(forest_2020_test_region, file.path(run_folder, "00_forest_2020_test_region.tif"), overwrite = TRUE)
+dem <- rast(here("data", test_region_name ,"DEM_5m.tif"))
+forest_elev <- ifel(forest_2020_test_region == 1 & !is.na(forest_2020_test_region), dem, NA)
+writeRaster(forest_elev, file.path(run_folder, "01_forest_elevation_2020.tif"), overwrite = TRUE)
+
+# Create circular weight matrix and function for 89.8 quantile
+calculate_moving_window <- function(raster, window_size, p = 0.898) {
+  terraOptions(memfrac = 0.8)
+  start_time <- Sys.time()
+  
+  weight_matrix <- focalMat(raster, d = window_size, type = "circle")
+  weight_matrix[weight_matrix > 0] <- 1 
+  
+  fun <- function(x) {
+    val <- quantile(x, probs = p, na.rm = TRUE, names = FALSE)
+    as.numeric(val)
+  }
+  
+  focal_p <- focal(raster, w = weight_matrix, fun = fun, na.policy = "all")
+  
+  end_time <- Sys.time()
+  runtime <- end_time - start_time
+  message("Runtime: ", round(runtime, 2), " ", attr(runtime, "units"))
+  return(focal_p)
+}
+
+forest_limit_rast <- calculate_moving_window(forest_elev, config$moving_window_fine)
+timber_limit_rast_run1 <- calculate_moving_window(forest_elev, config$moving_window_coarse)
+timber_limit_rast_run2 <- calculate_moving_window(timber_limit_rast_run1, config$moving_window_coarse)
+writeRaster(forest_limit_rast, here(run_folder, "02a_forestline_limit_rast.tif"), overwrite = TRUE)
+writeRaster(timber_limit_rast_run2, here(run_folder, "02b_timberline_limit_rast.tif"), overwrite = TRUE)
+
+forest_limit_rast <- rast(file.path(run_folder, "02a_forestline_limit_rast.tif"))
+timber_limit_rast <- rast(file.path(run_folder, "02b_timberline_limit_rast.tif"))
+
+generate_treeline <- function(){
+  dem <- rast(here("data", test_region_name ,"DEM_5m.tif"))
+  dem[dem < config$min_elevation] <- NA # remove areas below threshold
+  
+  diff_rast_forest <-  dem - forest_limit_rast
+  writeRaster(diff_rast_forest, here(run_folder, "03a_diff_rast_forest.tif"), overwrite = TRUE)
   diff_rast_forest_binary <- diff_rast_forest < 0 
   diff_rast_forest_binary[is.na(diff_rast_forest_binary)] <- 0 # set 0 values to NA for upcoming addition 
-  writeRaster(diff_rast_forest_binary, here("data", test_region_name, "nguyen", glue("4_diff_rast_mask_{treeline_type}.tif")), overwrite = TRUE)
+  writeRaster(diff_rast_forest_binary, file.path(run_folder, "4_diff_rast_mask_forest_line.tif"), overwrite = TRUE)
   
-  return(diff_rast_forest_binary)
-}
+  diff_rast_timber <- dem - timber_limit_rast
+  writeRaster(diff_rast_timber, here(run_folder, "03b_diff_rast_timber.tif"), overwrite = TRUE)
+  diff_rast_timber_binary <- diff_rast_timber < 0
+  diff_rast_timber_binary[is.na(diff_rast_timber_binary)] <- 0
+  writeRaster(diff_rast_timber_binary, file.path(run_folder, "4_diff_rast_mask_timber_line.tif"), overwrite = TRUE)
 
-diff_rast_forest_binary <- generate_treeline(dem, forest_limit_rast, "forestline")
-diff_rast_timber_binary <- generate_treeline(dem, timber_limit_rast, "timberline")
+}
+generate_treeline()
+
 
 
 combine_lines <- function(forestline, timberline){
@@ -1277,53 +1447,3 @@ extract_no_flow_points <- function(test_region_name) {
 extract_no_flow_points(test_region_name)
 ```
 
-```{r}
-
-download_files_from_csv <- function(directory) {
-  csv_file <- list.files(directory, pattern = "\\.csv$", full.names = TRUE)
-  download_links <- readr::read_csv(csv_file, col_names = FALSE)
-  names(download_links) <- "download_link"
-
-  tif_files <- list.files(path = directory, pattern = "\\.tif$", full.names = TRUE)
-  
-  # if files are already downloaded. skip download (e.g. if you add some files manually and want to rerun the merge function) 
-  if (length(tif_files) > 1) {
-    return()
-  } else {
-    # download all files from csv link
-    # link <- download_links$download_link[1] # for manual debugging
-    for (link in download_links$download_link) {
-      file_name <- basename(link)
-      destination <- file.path(directory, file_name)
-
-      tryCatch({
-        response <- httr::GET(link)
-        if (httr::status_code(response) == 200) {
-          httr::GET(link, httr::write_disk(destination, overwrite = TRUE))
-          message("Downloaded: ", file_name)
-        } else {
-          # Try replacing 2023 with 2022
-          alt_link <- gsub("2023", "2022", link)
-          alt_file_name <- basename(alt_link)
-          alt_destination <- file.path(directory, alt_file_name)
-
-          alt_response <- httr::GET(alt_link)
-          if (httr::status_code(alt_response) == 200) {
-            httr::GET(alt_link, httr::write_disk(destination, overwrite = TRUE))
-            message("Downloaded (alternate): ", alt_file_name)
-          } else {
-            message("Skipped (HTTP ", httr::status_code(response), "): ", file_name)
-          }
-        }
-      }, error = function(e) {
-        message("Error downloading: ", file_name, " - ", e$message)
-      })
-    }
-  }
-}
-
-
-directory <- here("data", "test_region_3", "DEM_2m")
-
-download_files_from_csv(directory)
-```
