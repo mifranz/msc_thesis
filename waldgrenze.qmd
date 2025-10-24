@@ -1446,16 +1446,16 @@ calculate_moving_window <- function(raster, window_size, p = 0.898) {
 # Results: Pixel Comparison
 ```{r}
 compare_treeline_methods <- function() {
-  nguyen_run = "run_5674156c"
+  nguyen_run = "run_87d08361"
   gehrig_run = "run_b86b1154"
   paulsen_run = "run_077f8286"
   szerencsits_run = "run_1bb9537a"
   # Build paths
   paths <- list(
-    nguyen = file.path(base_path, nguyen_region, "nguyen", nguyen_run),
-    gehrig_fasel = file.path(base_path, other_region, "gehrig_fasel", gehrig_run),
-    paulsen_koerner = file.path(base_path, other_region, "paulsen_koerner", paulsen_run),
-    szerencsits = file.path(base_path, other_region, "szerencsits", szerencsits_run)
+    nguyen = file.path("data", test_region_name, "nguyen", nguyen_run),
+    gehrig_fasel = file.path("data", test_region_name, "gehrig_fasel", gehrig_run),
+    paulsen_koerner = file.path("data", test_region_name, "paulsen_koerner", paulsen_run),
+    szerencsits = file.path("data", test_region_name, "szerencsits", szerencsits_run)
   )
   
   # Read all rasters
@@ -1482,7 +1482,7 @@ compare_treeline_methods <- function() {
   names(rasters_aligned) <- names(rasters)
   # write all rasters
   for(method in names(rasters_aligned)) {
-    out_path <- file.path(base_path, "Results", paste0("treeline_", method, ".tif"))
+    out_path <- file.path("data", "Results", paste0("treeline_", method, ".tif"))
     writeRaster(rasters_aligned[[method]], out_path, overwrite = TRUE)
   }
   
@@ -1493,7 +1493,7 @@ compare_treeline_methods <- function() {
   
   # Sum all rasters
   summed <- Reduce("+", rasters_no_na)
-  writeRaster(summed, file.path(base_path, "Results", "treeline_sum_all_methods.tif"), overwrite = TRUE)
+  writeRaster(summed, file.path("data", "Results", "A_01_treeline_sum_all_methods.tif"), overwrite = TRUE)
 }
 
 raster_names <- list(
@@ -1503,78 +1503,292 @@ raster_names <- list(
   szerencsits = "13_combined_trees.tif"
 )
 
-base_path = "data"
-nguyen_region = "test_region_7"
-other_region = "test_region_6"
 compare_treeline_methods()
 ```
 
 
 # Results: Epsilon Bands
 ```{r}
-polygons_to_rasterized_lines <- function() {
+res = 10
+window_size_radius = 500
+elevation_threshold = 100 
+dem <-  rast(file.path("data", test_region_name, glue("DEM_{res}m.tif")))
+polygons_to_rasterized_lines <- function(methods_to_process = "all") {
+
   
-  reference_raster <- rast(file.path(base_path, "Results", "treeline_sum_all_methods.tif"))
-  
-  # Build paths
-  paths <- list(
-    nguyen = file.path(base_path, nguyen_region, "nguyen", nguyen_run),
-    gehrig_fasel = file.path(base_path, other_region, "gehrig_fasel", gehrig_run),
-    paulsen_koerner = file.path(base_path, other_region, "paulsen_koerner", paulsen_run),
-    szerencsits = file.path(base_path, other_region, "szerencsits", szerencsits_run)
+  nguyen_run = "run_87d08361"
+  gehrig_run = "run_b86b1154"
+  paulsen_run = "run_077f8286"
+  szerencsits_run = "run_1bb9537a"
+  polygon_files <- list(
+    nguyen = "7_realized_treeline_nguyen.gpkg",
+    gehrig_fasel = "14b_final_treeline_regional.gpkg",
+    paulsen_koerner = "10_gis_treeline_vectorized.gpkg",
+    szerencsits = "14_final_treeline.gpkg"
   )
+  terraOptions(memfrac = 0.8)
+
+  dem <- crop(dem, test_region)
+  dem <- mask(dem, test_region)
+  dem <- terra::trim(dem)
+  reference_raster <- dem
   
-  # Read polygons and convert to lines
-  rasterized <- lapply(names(paths), function(method) {
+  all_paths <- list(
+    nguyen = file.path("data", test_region_name, "nguyen", nguyen_run),
+    gehrig_fasel = file.path("data", test_region_name, "gehrig_fasel", gehrig_run),
+    paulsen_koerner = file.path("data", test_region_name, "paulsen_koerner", paulsen_run),
+    szerencsits = file.path("data", test_region_name, "szerencsits", szerencsits_run)
+  )
+
+  # Filter methods based on parameter
+  if (methods_to_process == "all") {
+    paths <- all_paths
+  } else { paths <- all_paths[methods_to_process]}
+  
+  cat("Processing methods:", paste(names(paths), collapse = ", "), "\n")
+  
+  # Read polygons and convert to rasterized lines
+  rasterized_lines <- lapply(names(paths), function(method) {
+    cat("\nProcessing", method, "...\n")
     gpkg_path <- file.path(paths[[method]], polygon_files[[method]])
     poly <- vect(gpkg_path)
     line <- as.lines(poly)
     rast_line <- rasterize(line, reference_raster, touches = FALSE)
-    rast_line
+    # Convert to binary (1 = treeline, NA = no treeline)
+    rast_line <- ifel(!is.na(rast_line), 1, NA)
+    
+    rast_line <- crop(rast_line, test_region)
+    rast_line <- mask(rast_line, test_region)
+    # Write out rasterized line
+    output_path <- file.path("data", "Results", paste0("B_01_", method, "_rasterized_line.tif"))
+    writeRaster(rast_line, output_path, overwrite = TRUE)
+    cat("  Saved to:", output_path, "\n")
+    
+    return(rast_line)
   })
-  names(rasterized) <- names(paths)
+  names(rasterized_lines) <- names(paths)
   
-  dem <- rast(dem_path)
+  # Create elevation buffers for each method
+  cat("\n=== Creating elevation buffers ===\n")
+  cat("Window size:", window_size, "m\n")
+  cat("Elevation threshold: ±", elevation_threshold, "m\n")
   
-  # Resample DEM to match reference
-  if (!compareGeom(reference_raster, dem, stopOnError = FALSE)) {
-    dem_resampled <- resample(dem, reference_raster, method = "bilinear")
-  } else {
-    dem_resampled <- dem
-  }
+  # Create circular weight matrix once
+  weight_matrix <- focalMat(dem, d = window_size, type = "circle")
+  weight_matrix[weight_matrix > 0] <- 1
   
+  elevation_buffers <- lapply(names(rasterized_lines), function(method) {
+    cat("\nCreating elevation buffer for", method, "...\n")
+    start_time <- Sys.time()
+    
+    # Encode: treeline cells = elevation + 5000 to mark treeline elevations within the DEM
+    encoded_dem <- ifel(rasterized_lines[[method]] == 1, dem + 5000, dem)
+    
+    # For each cell: check if any treeline in window has elevation within threshold
+    buffer <- focal(encoded_dem, w = weight_matrix,
+                   fun = function(x) {
+                     center_elev_raw <- x[ceiling(length(x)/2)]
+                     center_elev <- ifelse(center_elev_raw > 5000, center_elev_raw - 5000, center_elev_raw)
+                     
+                     # Find treeline cells in window (values > 5000)
+                     treeline_cells <- x[x > 5000]
+                     if (length(treeline_cells) == 0) return(0)
+                     
+                     # Decode their elevations
+                     treeline_elevs <- treeline_cells - 5000
+                     
+                     # Check if center elevation is within threshold of ANY treeline
+                     elev_diffs <- abs(treeline_elevs - center_elev)
+                     within <- any(elev_diffs <= elevation_threshold)
+                     
+                     return(as.numeric(within))
+                   })
+    
+    end_time <- Sys.time()
+    runtime <- end_time - start_time
+    cat("Completed in", round(runtime, 2), attr(runtime, "units"), "\n")
+    output_path <- file.path("data", "Results", paste0("B_02_", method, "_ref_elevation_buffer.tif"))
+    writeRaster(buffer, output_path, overwrite = TRUE)
+    cat("  Saved to:", output_path, "\n")
+    return(buffer)
+  })
+  names(elevation_buffers) <- names(rasterized_lines)
+  
+  # Return both rasterized lines and elevation buffers
 
-
-  }
 }
-base_path = "data"
-nguyen_region = "test_region_7"
-other_region = "test_region_6"
-nguyen_run = "run_5674156c"
-gehrig_run = "run_b86b1154"
-paulsen_run = "run_077f8286"
-szerencsits_run = "run_1bb9537a"
-polygon_files <- list(
-  nguyen = "7_realized_treeline_nguyen.gpkg",
-  gehrig_fasel = "14b_final_treeline_regional.gpkg",
-  paulsen_koerner = "10_gis_treeline_vectorized.gpkg",
-  szerencsits = "14_final_treeline.gpkg"
-)
-res = 10 # output resolution, dependant on resultion set within nguyen method
-buffer_m = 20
-dem_path = file.path(base_path, other_region, "DEM_{res}.tif")
-search_radius = 50
-
 polygons_to_rasterized_lines()
 
-
-for(method in names(shifted_treeline)) {
-  print(1)
-  # out_path <- file.path(base_path, "Results", paste0("treeline_shifted_", method, ".tif"))
-  # writeRaster(shifted_treeline[[method]], out_path, overwrite = TRUE)
+methods_to_compare = "all"
+calculate_buffer_overlap <- function(methods_to_compare = "all") {
+  
+  cat("\n=== Calculating buffer overlap percentages ===\n")
+  
+  # Define all methods
+  all_methods <- c("nguyen", "gehrig_fasel", "paulsen_koerner", "szerencsits")
+  
+  # Filter methods
+  if (methods_to_compare[1] == "all") {
+    methods <- all_methods
+  } else {
+    methods <- methods_to_compare
+  }
+  
+  # Load rasterized lines and elevation buffers
+  rasterized_lines <- list()
+  elevation_buffers <- list()
+  
+  for (method in methods) {
+    line_path <- file.path("data", "Results", paste0("B_01_", method, "_rasterized_line.tif"))
+    buffer_path <- file.path("data", "Results", paste0("B_02_", method, "_ref_elevation_buffer.tif"))
+    
+    rasterized_lines[[method]] <- rast(line_path)
+    elevation_buffers[[method]] <- rast(buffer_path)
+  }
+  
+  # Create results matrix for all pairwise comparisons
+  results_matrix <- matrix(NA, nrow = length(methods), ncol = length(methods),
+                          dimnames = list(methods, methods))
+  
+  # Calculate percentages: for each method pair
+  for (tested_method in methods) {
+    for (reference_method in methods) {
+      if (tested_method == reference_method) {
+        results_matrix[tested_method, reference_method] <- 100.0
+        next
+      }
+      
+      cat("\nTesting:", tested_method, "against buffer of:", reference_method, "\n")
+      
+      # Get tested line and reference buffer
+      tested_line <- rasterized_lines[[tested_method]]
+      reference_buffer <- elevation_buffers[[reference_method]]
+      
+      # Calculate overlap: tested line cells that fall within reference buffer
+      # Multiply: 1*1=1 (line in buffer), 1*0=0 (line outside buffer), NA otherwise
+      overlap <- tested_line * reference_buffer
+      
+      # Count cells
+      tested_total <- sum(values(tested_line), na.rm = TRUE)
+      overlap_count <- sum(values(overlap), na.rm = TRUE)
+      
+      # Calculate percentage
+      percentage <- round((overlap_count / tested_total) * 100,2)
+      
+      results_matrix[tested_method, reference_method] <- percentage
+      
+      cat("  ", tested_method, "cells within", reference_method, "buffer:", 
+          round(percentage, 2), "%\n")
+    }
+  }
+  
+  # Print results table
+  cat("\n=== Results Matrix ===\n")
+  cat("Rows = tested method, Columns = reference buffer\n")
+  print(round(results_matrix, 2))
+  
+  # Save results
+  results_df <- as.data.frame(results_matrix)
+  output_path <- file.path("data", "Results", "B_03_buffer_overlap_percentages.csv")
+  write.csv(results_df, output_path, row.names = TRUE)
+  cat("\nSaved to:", output_path, "\n")
+  
+  return(results_matrix)
 }
 
+# Usage
+overlap_results <- calculate_buffer_overlap("all")
 
+methods_to_process = "all"
+calculate_elevation_histograms <- function(methods_to_process = "all") {
+  
+  cat("\n=== Calculating elevation histograms ===\n")
+  
+  # Define all methods
+  all_methods <- c("nguyen", "gehrig_fasel", "paulsen_koerner", "szerencsits")
+  
+  # Filter methods
+  if (methods_to_process[1] == "all") {
+    methods <- all_methods
+  } else {
+    methods <- methods_to_process
+  }
+  
+  dem <- crop(dem, test_region)
+  dem <- mask(dem, test_region)
+  dem <- terra::trim(dem)
+  
+  # Store results
+  elevation_data <- list()
+  histograms <- list()
+  
+  for (method in methods) {
+    cat("\nProcessing", method, "...\n")
+    
+    # Load rasterized line
+    line_path <- file.path("data", "Results", paste0("B_01_", method, "_rasterized_line.tif"))
+    rasterized_line <- rast(line_path)
+    
+    # Extract elevation values where treeline exists
+    treeline_elevations <- dem * rasterized_line
+    elev_values <- values(treeline_elevations)
+    elev_values <- elev_values[!is.na(elev_values)]
+    
+    cat("  Found", length(elev_values), "treeline cells\n")
+    cat("  Elevation range:", round(min(elev_values)), "-", round(max(elev_values)), "m\n")
+    cat("  Mean elevation:", round(mean(elev_values)), "m\n")
+    cat("  Median elevation:", round(median(elev_values)), "m\n")
+    
+    # Store raw data
+    elevation_data[[method]] <- elev_values
+    
+    # Create histogram
+    hist_obj <- hist(elev_values, 
+                     breaks = 30,
+                     plot = FALSE)
+    histograms[[method]] <- hist_obj
+    
+    # Save histogram data
+    hist_df <- data.frame(
+      breaks_mid = hist_obj$mids,
+      counts = hist_obj$counts,
+      density = hist_obj$density
+    )
+    output_path <- file.path("data", "Results", paste0("B_04_", method, "_elevation_histogram.csv"))
+    write.csv(hist_df, output_path, row.names = FALSE)
+    cat("  Saved histogram data to:", output_path, "\n")
+  }
+  
+  # Create combined plot
+  output_plot <- file.path("data", "Results", "B_04_elevation_histograms_combined.png")
+  png(output_plot, width = 1200, height = 800, res = 150)
+  par(mfrow = c(2, 2))
+  
+  for (method in methods) {
+    hist(elevation_data[[method]],
+         breaks = 30,
+         main = paste("Elevation Distribution -", method),
+         xlab = "Elevation (m)",
+         ylab = "Frequency",
+         col = "skyblue",
+         border = "white")
+    abline(v = mean(elevation_data[[method]]), col = "red", lwd = 2, lty = 2)
+    legend("topright", legend = paste("Mean:", round(mean(elevation_data[[method]]))), 
+           col = "red", lty = 2, lwd = 2)
+  }
+  
+  dev.off()
+  cat("\nSaved combined plot to:", output_plot, "\n")
+  
+  # Return data
+  return(list(
+    elevation_data = elevation_data,
+    histograms = histograms
+  ))
+}
+
+# Usage
+hist_results <- calculate_elevation_histograms("all")
 ```
 
 # one time functions
