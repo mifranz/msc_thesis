@@ -47,17 +47,13 @@ conflicts_prefer(dplyr::select)
 
 ```{r}
 # initialising variables
-test_region_name <- "test_region_6"
+test_region_name <- "test_region_4"
 
 if (!dir.exists(here("data",test_region_name ))) {
   einzug2km <- st_read(here("data", "processed_data", "einzugsgebiete_ch.gpkg")) %>% st_zm()
   dir.create(here("data",test_region_name ), recursive = TRUE)
-  ids <- c(130454, 130909, 130484, 130258, 130336, 130095, 130480, 
-            130566, 130654, 130593, 130559, 130189, 130234, 130315, 130322, 
-            130005, 130496, 130308, 130740, 130059, 130466, 130055, 130379, 
-            130335, 130078, 130577, 130439, 130629, 130751, 130215, 130699, 
-            130773, 130439, 130358, 130118, 130946, 130848)
-  einzuggroesse <- "TEZGNR1000"
+  ids <- c(120094,120596)
+  einzuggroesse <- "TEZGNR150"
   selected_region <- einzug2km %>% filter(!!sym(einzuggroesse) %in% ids) %>% st_union() %>% st_as_sf() %>% nngeo::st_remove_holes() %>% st_make_valid()
   st_write(selected_region, here("data", test_region_name, glue("{test_region_name}.gpkg")), delete_dsn = TRUE)
 }
@@ -117,12 +113,15 @@ resample_DEM <- function(res){
   writeRaster(dem5m_clean, here("data", test_region_name,glue("DEM_{res}m.tif")), overwrite=TRUE)
 }
 
-# clip DEM25 to test region (for Gehrig-Fasel, ..)
-clip_25m_DEM <- function(){
- dem25 <- rast("/Users/michafranz/Desktop/_Projekte/Geodaten/swisstopo/swissaltiregio_2056_5728.tif")
-  dem25_test_region <- crop(dem25, test_region)
-  dem25_test_region_masked <- mask(dem25_test_region, test_region)
-  writeRaster(dem25_test_region_masked, here("data", test_region_name,"DEM_25m.tif"), overwrite=TRUE) 
+# clip DEM25 to test region
+res=25
+clip_25m_DEM <- function(res=25){
+  dem_10 <- rast("/Users/michafranz/Desktop/_Projekte/Geodaten/swisstopo/swissaltiregio_2056_5728.tif")
+  dem_10_test_region <- crop(dem_10, test_region)
+  new_raster <- rast(ext = ext(dem_10_test_region), resolution = res, crs = crs(dem_10_test_region))
+  dem_25 <- resample(dem_10_test_region, new_raster, method = "bilinear")
+  dem_25_test_region_masked <- mask(dem_25, test_region)
+  writeRaster(dem_25_test_region_masked, here("data", test_region_name,"DEM_25m.tif"), overwrite=TRUE) 
 }
 
 # process DEM to ensure its extend fits to the test region
@@ -316,6 +315,10 @@ paulsen_koerner_2001 <- function() {
   writeRaster(gis_treeline_mask, file.path(run_folder,"09_gis_treeline_mask.tif"), overwrite = TRUE)
   
   gis_treeline_mask_v <- as.polygons(gis_treeline_mask, dissolve = TRUE) %>% st_as_sf() %>% nngeo::st_remove_holes()
+  
+  # filter polygons outside of test_region
+  gis_treeline_mask_v <- st_intersection(gis_treeline_mask_v, test_region)
+
   st_write(gis_treeline_mask_v, file.path(run_folder,"10_gis_treeline_vectorized.gpkg"), delete_dsn = TRUE)
 }
 
@@ -409,11 +412,11 @@ get_forest_elevations()
 
 moving_window_maxForest_local <- function(){
 
-  window_sizes <- c(500, 600, 700, 800, 900, 1000, 1100, 1200, 1500, 3000) # in meters
+  window_sizes <- c(900) # in meters, paper tested 500, 600, 700, 800, 900, 1000, 1100, 1200, 1500, 3000
   
   dem_forest_only <- rast(file.path(run_folder, "04_dem_forest_only_100m.tif"))
 
-  window_size <- 900
+  # window_size <- 900
   for (window_size in window_sizes) {
     # Calculate cells per side for this window size
     cells_per_side <- round(window_size / config$resolution) 
@@ -552,8 +555,12 @@ treeline_calculation <- function(){
   treeline_local_polys <- as.polygons(treeline_local_binary, dissolve=TRUE)
   treeline_regional_polys <- as.polygons(treeline_regional_binary, dissolve=TRUE)
   
-  treeline_local_polys_sf <- st_as_sf(treeline_local_polys) %>% st_cast("POLYGON") %>% st_make_valid() 
-  treeline_regional_polys_sf <- st_as_sf(treeline_regional_polys) %>% st_cast("POLYGON") %>% st_make_valid()
+  treeline_local_polys_sf <- st_as_sf(treeline_local_polys) %>% st_cast("POLYGON") %>% st_make_valid() %>% filter(swissaltiregio_2056_5728 == 1)
+  treeline_regional_polys_sf <- st_as_sf(treeline_regional_polys) %>% st_cast("POLYGON") %>% st_make_valid() %>% filter(swissaltiregio_2056_5728 == 1)
+  
+  # filter polygons outside of test_region
+  treeline_local_polys_sf <- st_intersection(treeline_local_polys_sf, test_region)
+  treeline_regional_polys_sf <- st_intersection(treeline_regional_polys_sf, test_region)
   
   st_write(treeline_local_polys_sf, file.path(run_folder,"14a_final_treeline_local.gpkg"), delete_dsn=TRUE, quiet = show_message)
   st_write(treeline_regional_polys_sf, file.path(run_folder,"14b_final_treeline_regional.gpkg"), delete_dsn=TRUE, quiet = show_message)
@@ -584,7 +591,8 @@ config <- list(
   tree_categories_as97 = c(37,38,50,51,52,54,55,56,57,58,59,60), # default 37,38,50,51,52,54,55,56,57,58,59,60
   einzelbaum_objektart = c("Einzelbaum"), # default 
   bodenbedeckung_symb_objektart = c("Wald_offen_Symb"),
-  area_threshold_2 = 500000
+  area_threshold_2 = 500000,
+  filter_below_1000 = FALSE
 )
 
 # used by author for trees: NOAA92 to NOAA04 conversion:
@@ -616,34 +624,32 @@ write_config <- function(config, run_folder) {
   writeLines(config_text, file.path(run_folder, "config.txt"))
 }
 
-# prepare_szerencsits()
+prepare_szerencsits()
 
 preprocess_dem <- function() {
   dem_25m_test_region <- rast(here("data", test_region_name, "DEM_25m.tif"))
   
-  # Create elevation mask
-  elevation_mask <- dem_25m_test_region >= 1000
-  dem_masked <- mask(dem_25m_test_region, elevation_mask, maskvalues = FALSE)
-  
-  # Remove areas below 1000
-  polygons <- as.polygons(elevation_mask, dissolve = TRUE) %>% 
-    st_as_sf() %>% 
-    st_cast("MULTIPOLYGON")
-
-  if(any(st_geometry_type(polygons) == "MULTIPOLYGON")) {polygons <- st_cast(polygons, "POLYGON")}
-  
-  # Filter and calculate areas
-  names(polygons)[1] <- "polygon_area"
-  polygons_above_threshold <- polygons %>% filter(polygon_area == 1) # 1 = above 1000m
-  polygons_above_threshold$area_km2 <- as.numeric(st_area(polygons_above_threshold) / 1e6)
-  
-  # Keep only large polygons
-  large_polygons <- polygons_above_threshold[polygons_above_threshold$area_km2 > config$area_threshold, ]
-  
-  # Create final mask and DEM
-  raster_mask <- rasterize(large_polygons, dem_25m_test_region, field = 1, background = NA)
-  dem_final <- mask(dem_25m_test_region, raster_mask)
-
+   if(config$filter_below_1000){
+     # Create elevation mask
+     elevation_mask <- dem_25m_test_region >= 1000 # areas below 1000m will be discarded
+     dem_masked <- mask(dem_25m_test_region, elevation_mask, maskvalues = FALSE)
+     # Remove areas below 1000
+     polygons <- as.polygons(elevation_mask, dissolve = TRUE) %>% 
+      st_as_sf() %>% 
+      st_cast("MULTIPOLYGON")
+     
+     if(any(st_geometry_type(polygons) == "MULTIPOLYGON")) {polygons <- st_cast(polygons, "POLYGON")}
+     # Filter and calculate areas
+     names(polygons)[1] <- "polygon_area"
+     polygons_above_threshold <- polygons %>% filter(polygon_area == 1) # 1 = above 1000m
+     polygons_above_threshold$area_km2 <- as.numeric(st_area(polygons_above_threshold) / 1e6)
+     # Keep only large polygons
+     large_polygons <- polygons_above_threshold[polygons_above_threshold$area_km2 > config$area_threshold, ]
+     # Create final mask and DEM
+     raster_mask <- rasterize(large_polygons, dem_25m_test_region, field = 1, background = NA)
+     dem_final <- mask(dem_25m_test_region, raster_mask)
+   }
+   else {dem_final <- dem_25m_test_region}
   writeRaster(dem_final, file.path(run_folder, "01_dem_final.tif"), overwrite = TRUE)
 }
 
@@ -1000,12 +1006,10 @@ combine_and_polygonize <- function() {
   tree_polys_sf$area <- as.numeric(st_area(tree_polys_sf))
   
   forest_polys_sf_filtered <- forest_polys_sf %>% 
-    filter(area > config$area_threshold_2) %>%
-    st_remove_holes()
+    filter(area > config$area_threshold_2) 
   
   tree_polys_sf_filtered <- tree_polys_sf %>% 
-    filter(area > config$area_threshold_2) %>%
-    st_remove_holes()
+    filter(area > config$area_threshold_2)
   
   # Write final results
   st_write(forest_polys_sf_filtered, file.path(run_folder,"14_final_forestline.gpkg"), delete_dsn=TRUE, quiet = show_message)
@@ -1045,7 +1049,7 @@ if (!dir.exists(run_folder)) {
 # Save config for reference
 writeLines(capture.output(dput(config)), file.path(run_folder, "config.txt"))
 
-# prepare_nguyen()
+prepare_nguyen()
 
 calculate_composites <- function() {
   source_files <- here("data", "source_data", "nguyen")
@@ -1064,14 +1068,15 @@ calculate_composites <- function() {
       available_years <- c(available_years, year)
     }
   }
-  
+  years <- short_years
+  composite_name <- "Short"
   load_and_stack_rasters <- function(years, composite_name) {
     available <- base::intersect(years, available_years)
     print(paste(composite_name, "composite using:", paste(available, collapse=", ")))
     
     preds <- list()
     votes <- list()
-    
+    year = 2014
     for(year in available) {
       print(paste("Loading", year, "for", composite_name, "composite"))
       
@@ -1081,18 +1086,24 @@ calculate_composites <- function() {
       pred_rast <- rast(pred_file)
       vote_rast <- rast(vote_file)
       
-      pred_cropped <- mask(crop(pred_rast, test_region), test_region)
+      pred_cropped <- tryCatch({
+        mask(crop(pred_rast, test_region), test_region)
+      }, error = function(e) {
+        cat("Year", year, "raster does not intersect with test_region - skipping\n")
+        return(NULL)
+      })
+      
+      if (is.null(pred_cropped)) next
       vote_cropped <- mask(crop(vote_rast, test_region), test_region)
       
-      if (all(is.na(values(pred_cropped, mat=FALSE)))){
-        cat("Year", year, "cropped rasters contain no valid values - skipping\n")
-        next
-      }
+      pred_cropped <- extend(pred_cropped, test_region)
+      vote_cropped <- extend(vote_cropped, test_region)
+      
           
       preds[[length(preds)+1]] <- pred_cropped
       votes[[length(votes)+1]] <- vote_cropped
     }
-    
+
     
     pred_stack <- rast(preds)
     vote_stack <- rast(votes)
@@ -1113,60 +1124,8 @@ calculate_composites <- function() {
   ))
 
 }
+
 stacks <- calculate_composites()
-
-
-create_composite <- function(pred_stack, vote_stack, flag_ties = FALSE) {
-  start_time <- Sys.time()
-  n_pixels <- ncell(pred_stack)
-  n_layers <- nlyr(pred_stack)
-  
-  cat("Starting composite creation...\n")
-  cat("Processing", n_pixels, "pixels across", n_layers, "years\n")
-  
-  result <- app(c(pred_stack, vote_stack), function(x) {
-    n_years <- nlyr(pred_stack)
-    predictions <- x[1:n_years]
-    votes <- x[(n_years+1):(2*n_years)]
-    
-    valid <- !is.na(predictions) & votes != 255
-    if(sum(valid) == 0) return(NA)
-    
-    valid_preds <- predictions[valid]
-    valid_votes <- votes[valid]
-    
-    min_uncertainty <- min(valid_votes)
-    min_indices <- which(valid_votes == min_uncertainty)
-    
-    if(length(min_indices) > 1) {
-      tied_predictions <- valid_preds[min_indices]
-      if(length(unique(tied_predictions)) > 1) {
-        if(flag_ties) {
-          return(2)  # Flag with value 2
-        } else {
-          return(valid_preds[max(min_indices)])  # Take most recent
-        }
-      } else {
-        return(tied_predictions[1])
-      }
-    } else {
-      return(valid_preds[min_indices[1]])
-    }
-  })
-  
-  end_time <- Sys.time()
-  runtime <- end_time - start_time
-  
-  cat("Composite creation completed in", round(runtime, 2), attr(runtime, "units"), "\n")
-  cat("Processing rate:", round(n_pixels / as.numeric(runtime, units="secs"), 0), "pixels/second\n")
-  
-  return(result)
-}
-# short_composite <- create_composite(stacks$short_pred, stacks$short_vote)
-# long_composite <- create_composite(stacks$long_pred, stacks$long_vote)
-# writeRaster(short_composite, file.path(run_folder, "00a_C_short.tif"), overwrite=TRUE)
-# writeRaster(long_composite, file.path(run_folder, "00b_C_long.tif"), overwrite=TRUE)
-
 create_composite_tiled <- function(pred_stack, vote_stack, flag_ties = FALSE, 
                                    tile_size = NULL, output_path = NULL) {
   
@@ -1391,65 +1350,35 @@ combine_lines <- function(){
   writeRaster(forest_timber_added, file.path(run_folder, "5_lines_combined.tif"), overwrite = TRUE)
   realized_treeline <- app(forest_timber_added, function(x) ifelse(x >= 1, 1, 0))
   writeRaster(realized_treeline, file.path(run_folder, "6_realized_treeline_nguyen.tif"), overwrite = TRUE)
-
+  
   # convert raster to polygon
   realized_treeline_poly <- as.polygons(realized_treeline, dissolve=TRUE)
   realized_treeline_poly_sf <- st_as_sf(realized_treeline_poly) %>% 
     st_cast("POLYGON") %>% 
-    st_make_valid()
+    st_make_valid() %>% 
+    filter(`lyr.1` == 1)
+  
+  # remove holes
+  realized_treeline_poly_sf <- nngeo::st_remove_holes(realized_treeline_poly_sf)
+  
   st_write(realized_treeline_poly_sf, file.path(run_folder, "7_realized_treeline_nguyen.gpkg"), delete_dsn=TRUE)
+  
+  # rasterize back to fill holes in raster
+  realized_treeline_filled <- rasterize(vect(realized_treeline_poly_sf), realized_treeline, field=1, background=0)
+  writeRaster(realized_treeline_filled, file.path(run_folder, "6_realized_treeline_nguyen_filled.tif"), overwrite = TRUE)
 }
 combine_lines()
 end_time <- Sys.time()
 cat("Duration:", round(difftime(end_time, start_time, units="secs"), 1), "seconds\n")
 ```
 
-
-```{r}
-calculate_moving_window <- function(raster, window_size, p = 0.898) {
-  terraOptions(memfrac = 0.8)
-  start_time <- Sys.time()
-  n_pixels <- ncell(raster)
-  
-  cat("Starting moving window calculation...\n")
-  cat("Processing", n_pixels, "pixels with window size", window_size, "\n")
-  
-  weight_matrix <- focalMat(raster, d = window_size, type = "circle")
-  weight_matrix[weight_matrix > 0] <- 1 
-    
-  fun <- function(x) {
-    if (all(is.na(x))) return(NA_real_)
-    x_clean <- x[!is.na(x)]
-    n <- length(x_clean)
-    if (n == 0) return(NA_real_)
-    
-    index <- ceiling(n * p)
-    sorted_vals <- sort(x_clean)
-    return(as.numeric(sorted_vals[index]))
-  }
-  # p = 0.898
-  # test_vals <- c(2000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-  # fun(test_vals)
-  focal_p <- focal(raster, w = weight_matrix, fun = fun, na.policy = "all")
-  
-  end_time <- Sys.time()
-  runtime <- end_time - start_time
-  
-  cat("Moving window calculation completed in", round(runtime, 2), attr(runtime, "units"), "\n")
-  cat("Processing rate:", round(n_pixels / as.numeric(runtime, units="secs"), 0), "pixels/second\n")
-  
-  return(focal_p)
-}
-```
-
-
 # Results: Pixel Comparison
 ```{r}
 compare_treeline_methods <- function() {
   nguyen_run = "run_87d08361"
   gehrig_run = "run_b86b1154"
-  paulsen_run = "run_077f8286"
-  szerencsits_run = "run_1bb9537a"
+  paulsen_run = "run_2a63c340"
+  szerencsits_run = "run_b65afa6d"
   # Build paths
   paths <- list(
     nguyen = file.path("data", test_region_name, "nguyen", nguyen_run),
@@ -1482,7 +1411,7 @@ compare_treeline_methods <- function() {
   names(rasters_aligned) <- names(rasters)
   # write all rasters
   for(method in names(rasters_aligned)) {
-    out_path <- file.path("data", "Results", paste0("treeline_", method, ".tif"))
+    out_path <- file.path("data", "Results", test_region_name, paste0("treeline_", method, ".tif"))
     writeRaster(rasters_aligned[[method]], out_path, overwrite = TRUE)
   }
   
@@ -1493,11 +1422,11 @@ compare_treeline_methods <- function() {
   
   # Sum all rasters
   summed <- Reduce("+", rasters_no_na)
-  writeRaster(summed, file.path("data", "Results", "A_01_treeline_sum_all_methods.tif"), overwrite = TRUE)
+  writeRaster(summed, file.path("data", "Results", test_region_name, "A_01_treeline_sum_all_methods.tif"), overwrite = TRUE)
 }
 
 raster_names <- list(
-  nguyen = "6_realized_treeline_nguyen.tif",
+  nguyen = "6_realized_treeline_nguyen_filled.tif",
   gehrig_fasel = "13b_treeline_regional_binary.tif",
   paulsen_koerner = "09_gis_treeline_mask.tif",
   szerencsits = "13_combined_trees.tif"
@@ -1510,15 +1439,18 @@ compare_treeline_methods()
 # Results: Epsilon Bands
 ```{r}
 res = 10
-window_size_radius = 500
+window_size_radius = 1000
 elevation_threshold = 100 
 dem <-  rast(file.path("data", test_region_name, glue("DEM_{res}m.tif")))
-polygons_to_rasterized_lines <- function(methods_to_process = "all") {
+# create test region folder in Results if not existing
+if (!dir.exists(file.path("data", "Results", test_region_name))) {
+  dir.create(file.path("data", "Results", test_region_name), recursive = TRUE)
+}
+polygons_to_rasterized_lines <- function(methods_to_process = "all", target_resolution = 15) {
 
-  
   nguyen_run = "run_87d08361"
   gehrig_run = "run_b86b1154"
-  paulsen_run = "run_077f8286"
+  paulsen_run = "run_2a63c340"
   szerencsits_run = "run_1bb9537a"
   polygon_files <- list(
     nguyen = "7_realized_treeline_nguyen.gpkg",
@@ -1528,9 +1460,20 @@ polygons_to_rasterized_lines <- function(methods_to_process = "all") {
   )
   terraOptions(memfrac = 0.8)
 
-  dem <- crop(dem, test_region)
-  dem <- mask(dem, test_region)
-  dem <- terra::trim(dem)
+  dem_original <- crop(dem, test_region)
+  dem_original <- mask(dem_original, test_region)
+  dem_original <- terra::trim(dem_original)
+  
+    # Resample to target resolution if specified
+  if (!is.null(target_resolution)) {
+    template <- rast(ext(dem_original), 
+                     resolution = target_resolution,
+                     crs = crs(dem_original))
+    dem <- resample(dem_original, template, method = "bilinear")
+  } else {
+    dem <- dem_original
+  }
+  
   reference_raster <- dem
   
   all_paths <- list(
@@ -1560,7 +1503,7 @@ polygons_to_rasterized_lines <- function(methods_to_process = "all") {
     rast_line <- crop(rast_line, test_region)
     rast_line <- mask(rast_line, test_region)
     # Write out rasterized line
-    output_path <- file.path("data", "Results", paste0("B_01_", method, "_rasterized_line.tif"))
+    output_path <- file.path("data", "Results", test_region_name,paste0("B_01_", method, "_rasterized_line.tif"))
     writeRaster(rast_line, output_path, overwrite = TRUE)
     cat("  Saved to:", output_path, "\n")
     
@@ -1570,11 +1513,11 @@ polygons_to_rasterized_lines <- function(methods_to_process = "all") {
   
   # Create elevation buffers for each method
   cat("\n=== Creating elevation buffers ===\n")
-  cat("Window size:", window_size, "m\n")
+  cat("Window size:", window_size_radius, "m\n")
   cat("Elevation threshold: ±", elevation_threshold, "m\n")
   
   # Create circular weight matrix once
-  weight_matrix <- focalMat(dem, d = window_size, type = "circle")
+  weight_matrix <- focalMat(dem, d = window_size_radius, type = "circle")
   weight_matrix[weight_matrix > 0] <- 1
   
   elevation_buffers <- lapply(names(rasterized_lines), function(method) {
@@ -1607,7 +1550,7 @@ polygons_to_rasterized_lines <- function(methods_to_process = "all") {
     end_time <- Sys.time()
     runtime <- end_time - start_time
     cat("Completed in", round(runtime, 2), attr(runtime, "units"), "\n")
-    output_path <- file.path("data", "Results", paste0("B_02_", method, "_ref_elevation_buffer.tif"))
+    output_path <- file.path("data", "Results", test_region_name, paste0("B_02_", method, "_ref_elevation_buffer.tif"))
     writeRaster(buffer, output_path, overwrite = TRUE)
     cat("  Saved to:", output_path, "\n")
     return(buffer)
@@ -1639,8 +1582,8 @@ calculate_buffer_overlap <- function(methods_to_compare = "all") {
   elevation_buffers <- list()
   
   for (method in methods) {
-    line_path <- file.path("data", "Results", paste0("B_01_", method, "_rasterized_line.tif"))
-    buffer_path <- file.path("data", "Results", paste0("B_02_", method, "_ref_elevation_buffer.tif"))
+    line_path <- file.path("data", "Results", test_region_name, paste0("B_01_", method, "_rasterized_line.tif"))
+    buffer_path <- file.path("data", "Results", test_region_name, paste0("B_02_", method, "_ref_elevation_buffer.tif"))
     
     rasterized_lines[[method]] <- rast(line_path)
     elevation_buffers[[method]] <- rast(buffer_path)
@@ -1689,7 +1632,7 @@ calculate_buffer_overlap <- function(methods_to_compare = "all") {
   
   # Save results
   results_df <- as.data.frame(results_matrix)
-  output_path <- file.path("data", "Results", "B_03_buffer_overlap_percentages.csv")
+  output_path <- file.path("data", "Results",test_region_name, "B_03_buffer_overlap_percentages.csv")
   write.csv(results_df, output_path, row.names = TRUE)
   cat("\nSaved to:", output_path, "\n")
   
@@ -1726,7 +1669,7 @@ calculate_elevation_histograms <- function(methods_to_process = "all") {
     cat("\nProcessing", method, "...\n")
     
     # Load rasterized line
-    line_path <- file.path("data", "Results", paste0("B_01_", method, "_rasterized_line.tif"))
+    line_path <- file.path("data", "Results",test_region_name, paste0("B_01_", method, "_rasterized_line.tif"))
     rasterized_line <- rast(line_path)
     
     # Extract elevation values where treeline exists
@@ -1754,13 +1697,13 @@ calculate_elevation_histograms <- function(methods_to_process = "all") {
       counts = hist_obj$counts,
       density = hist_obj$density
     )
-    output_path <- file.path("data", "Results", paste0("B_04_", method, "_elevation_histogram.csv"))
+    output_path <- file.path("data", "Results",test_region_name, paste0("B_04_", method, "_elevation_histogram.csv"))
     write.csv(hist_df, output_path, row.names = FALSE)
     cat("  Saved histogram data to:", output_path, "\n")
   }
   
   # Create combined plot
-  output_plot <- file.path("data", "Results", "B_04_elevation_histograms_combined.png")
+  output_plot <- file.path("data", "Results", test_region_name, "B_04_elevation_histograms_combined.png")
   png(output_plot, width = 1200, height = 800, res = 150)
   par(mfrow = c(2, 2))
   
