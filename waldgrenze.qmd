@@ -271,7 +271,7 @@ config <- list(
   min_elevation = 1750, # minimum elevation to consider for treeline (default 1750)
   min_distance_to_peak = 150, # minimum distance from highest forest point to peak (default 150)
   input_dataset = "swissTLM3D", # swissTLM3D or original
-  category = ("closed_open") # closed, closed_open, closed_open_shrub , none
+  category = ("closed") # closed, closed_open, closed_open_shrub , none
   )
 
 
@@ -411,7 +411,7 @@ config <- list(
   mountain_top_threshold = 150, # minimum distance of a tree to the next mountain top in meters (default 150) 
   highest_pixel_subset_size = 1000,
   input_dataset = "swissTLM3D", # swissTLM3D or original
-  category = ("closed") # closed, closed_open, closed_open_shrub , none
+  category = ("closed") # closed, closed_open, closed_open_shrub , ""
       )
 
 # Create hash for folder name based on config settings
@@ -479,9 +479,12 @@ get_forest_elevations<- function() {
   # Mask DEM with forest locations
   if (config$input_dataset== "swissTLM3D"){
     forest_mask <- rast(here("data", test_region_name, "swissTLM3D_forest", glue("forest_{config$category}_{config$resolution}m.tif")))
+    forest_mask <- resample(forest_mask, new_raster, method = "bilinear")
   } else{
     forest_mask <- rasterize(arealstat_testregion_forest_cells, new_raster, field = 1, touches = FALSE)
   }
+  
+
 
   dem_forest <- mask(dem_new, forest_mask)
   
@@ -697,7 +700,7 @@ config <- list(
   area_threshold_2 = 500000,
   filter_below_1000 = FALSE,
   input_dataset = "swissTLM3D", # swissTLM3D or original
-  category = ("closed") # closed, closed_open, closed_open_shrub , none
+  category = ("closed") # closed, closed_open, closed_open_shrub , ""
 )
 
 # used by author for trees: NOAA92 to NOAA04 conversion:
@@ -1152,7 +1155,8 @@ config <- list(
   min_elevation = 1750,
   resolution = 10, # output resolution, originally 5m but computationally too heavy
   input_dataset = "swissTLM3D", # swissTLM3D or original
-  category = "closed_open" # closed, closed_open, closed_open_shrub , none  
+  category = "closed" # closed, closed_open, closed_open_shrub , none 
+  
   )
 
 # Create hash for folder name based on config settings
@@ -1502,30 +1506,52 @@ cat("Duration:", round(difftime(end_time, start_time, units="secs"), 1), "second
 # Results: Pixel Comparison
 
 ```{r}
-compare_treeline_methods <- function(test_region_name) {
+
+compare_treeline_methods <- function(test_region_name, run_pattern = "original") {
   # create folder in results if not existing
   test_region <- st_read(here("data", test_region_name, glue("{test_region_name}.gpkg"))) %>% st_zm()
-  if (!dir.exists(file.path("data", "Results", test_region_name))) {
-    dir.create(file.path("data", "Results", test_region_name), recursive = TRUE)
-  }
-  raster_names <- list(
-  nguyen = "6_realized_treeline_nguyen_filled.tif",
-  gehrig_fasel = "13b_treeline_regional_binary.tif",
-  paulsen_koerner = "09_gis_treeline_mask.tif",
-  szerencsits = "13_combined_trees.tif"
-)
+  # Create results folder with run_pattern subfolder
+  results_dir <- file.path("data", "Results", test_region_name, run_pattern)
   
-  nguyen_run = "run_87d08361"
-  gehrig_run = "run_b86b1154"
-  paulsen_run = "run_6ce60462"
-  szerencsits_run = "run_b65afa6d"
-  # Build paths
-  paths <- list(
-    nguyen = file.path("data", test_region_name, "nguyen", nguyen_run),
-    gehrig_fasel = file.path("data", test_region_name, "gehrig_fasel", gehrig_run),
-    paulsen_koerner = file.path("data", test_region_name, "paulsen_koerner", paulsen_run),
-    szerencsits = file.path("data", test_region_name, "szerencsits", szerencsits_run)
+  if (!dir.exists(results_dir)) {
+    dir.create(results_dir, recursive = TRUE)
+  }
+  
+  raster_names <- list(
+    nguyen = "6_realized_treeline_nguyen_filled.tif",
+    gehrig_fasel = "13b_treeline_regional_binary.tif",
+    paulsen_koerner = "09_gis_treeline_mask.tif",
+    szerencsits = "13_combined_forest.tif"
   )
+  
+  methods <- c("nguyen", "gehrig_fasel", "paulsen_koerner", "szerencsits")
+  
+  # Find matching runs for each method
+  find_run <- function(method) {
+    method_dir <- file.path("data", test_region_name, method)
+    all_runs <- list.dirs(method_dir, full.names = FALSE, recursive = FALSE)
+    
+    if (!is.null(run_pattern)) {
+      matching_runs <- all_runs[grepl(run_pattern, all_runs)]
+      if (length(matching_runs) == 0) {
+        stop(glue("No run matching '{run_pattern}' found in {method}"))
+      }
+      if (length(matching_runs) > 1) {
+        warning(glue("Multiple runs matching '{run_pattern}' in {method}, using first: {matching_runs[1]}"))
+      }
+      return(matching_runs[1])
+    } else {
+      return(all_runs[1])
+    }
+  }
+  
+  runs <- sapply(methods, find_run)
+  
+  # Build paths
+  paths <- lapply(methods, function(m) {
+    file.path("data", test_region_name, m, runs[m])
+  })
+  names(paths) <- methods
   
   # Read all rasters
   rasters <- lapply(names(paths), function(method) {
@@ -1548,10 +1574,12 @@ compare_treeline_methods <- function(test_region_name) {
     }
     r
   })
+  
   names(rasters_aligned) <- names(rasters)
+  
   # write all rasters
   for(method in names(rasters_aligned)) {
-    out_path <- file.path("data", "Results", test_region_name, paste0("treeline_", method, ".tif"))
+    out_path <- file.path(results_dir, paste0("treeline_", method, ".tif"))
     writeRaster(rasters_aligned[[method]], out_path, overwrite = TRUE)
   }
   
@@ -1570,10 +1598,10 @@ compare_treeline_methods <- function(test_region_name) {
   clip_polygon <- vect(file.path("data", test_region_name, 
                                  paste0(test_region_name, "_clip.gpkg")))
   
-  
   # Set values within clip_polygon to 4
   summed <- mask(summed, clip_polygon, inverse = TRUE, updatevalue = 4)
   summed <- mask(summed, test_region)
+  
   # Calculate percentage statistics
   freq_table <- freq(summed)
   total_cells <- sum(freq_table$count)
@@ -1589,17 +1617,18 @@ compare_treeline_methods <- function(test_region_name) {
                 freq_table$percentage[i]))
   }
   
-  # Optionally save to file
+  # Save to results_dir
   write.csv(freq_table, 
-            file.path("data", "Results", test_region_name, "treeline_agreement_stats.csv"), 
+            file.path(results_dir, "treeline_agreement_stats.csv"), 
             row.names = FALSE)
     
-  writeRaster(summed, file.path("data", "Results", test_region_name, "A_01_treeline_sum_all_methods.tif"), overwrite = TRUE)
+  writeRaster(summed, file.path(results_dir, "A_01_treeline_sum_all_methods.tif"), overwrite = TRUE)
 }
 
 
+compare_treeline_methods("test_region_4", "swissTLM3D_closed")
 regions <- c("test_region_4", "test_region_5", "test_region_1")
-for (region in regions) {
+for (region in regions) {üu
   compare_treeline_methods(region)
 }
 
@@ -1616,13 +1645,19 @@ dem <-  rast(file.path("data", test_region_name, glue("DEM_{res}m.tif")))
 if (!dir.exists(file.path("data", "Results", test_region_name))) {
   dir.create(file.path("data", "Results", test_region_name), recursive = TRUE)
 }
+dataset = "original"
 target_resolution = 15
-polygons_to_rasterized_lines <- function(methods_to_process = "all", target_resolution = 15) {
+polygons_to_rasterized_lines <- function(methods_to_process = "all", target_resolution = 15, run_type = "original") {
 
-  nguyen_run = "run_87d08361"
-  gehrig_run = "run_b86b1154"
-  paulsen_run = "run_6ce60462"
-  szerencsits_run = "run_b65afa6d"
+  run_folders <- list(
+    original               = "run_original",
+    closed                 = "run_swissTLM3D_closed",
+    closed_open            = "run_swissTLM3D_closed_open",
+    closed_open_shrubs     = "run_swissTLM3D_closed_open_shurbs"
+  )
+  run_prefix <- run_folders[[run_type]]
+  
+  
   polygon_files <- list(
     nguyen = "7_realized_treeline_nguyen.gpkg",
     gehrig_fasel = "14b_final_treeline_regional.gpkg",
@@ -1647,11 +1682,23 @@ polygons_to_rasterized_lines <- function(methods_to_process = "all", target_reso
   reference_raster <- dem
   
   all_paths <- list(
-    nguyen = file.path("data", test_region_name, "nguyen", nguyen_run),
-    gehrig_fasel = file.path("data", test_region_name, "gehrig_fasel", gehrig_run),
-    paulsen_koerner = file.path("data", test_region_name, "paulsen_koerner", paulsen_run),
-    szerencsits = file.path("data", test_region_name, "szerencsits", szerencsits_run)
+    nguyen         = file.path("data", test_region_name, "nguyen",         paste0(run_prefix, "*")),
+    gehrig_fasel   = file.path("data", test_region_name, "gehrig_fasel",   paste0(run_prefix, "*")),
+    paulsen_koerner= file.path("data", test_region_name, "paulsen_koerner",paste0(run_prefix, "*")),
+    szerencsits    = file.path("data", test_region_name, "szerencsits",    paste0(run_prefix, "*"))
   )
+  
+  all_paths <- lapply(all_paths, function(p) {
+  dirs <- Sys.glob(p)   # finds the run_XXXXXX folder
+  if (length(dirs) == 0) stop("No matching run folder: ", p)
+  dirs[1]
+  })
+  
+  output_base <- file.path("data", "Results", test_region_name, run_type)
+  
+  if (!dir.exists(output_base)) {
+    dir.create(output_base, recursive = TRUE)
+  }
 
   # Filter methods based on parameter
   if (methods_to_process == "all") {
@@ -1680,7 +1727,7 @@ polygons_to_rasterized_lines <- function(methods_to_process = "all", target_reso
     rast_line[clip_polygon] <- NA
     
     # Write out rasterized line
-    output_path <- file.path("data", "Results", test_region_name,paste0("B_01_", method, "_rasterized_line.tif"))
+    output_path <- file.path(output_base,paste0("B_01_", method, "_rasterized_line.tif"))
     writeRaster(rast_line, output_path, overwrite = TRUE)
     cat("  Saved to:", output_path, "\n")
     
@@ -1727,7 +1774,7 @@ polygons_to_rasterized_lines <- function(methods_to_process = "all", target_reso
     end_time <- Sys.time()
     runtime <- end_time - start_time
     cat("Completed in", round(runtime, 2), attr(runtime, "units"), "\n")
-    output_path <- file.path("data", "Results", test_region_name, paste0("B_02_", method, "_ref_elevation_buffer.tif"))
+    output_path <- file.path(output_base, paste0("B_02_", method, "_ref_elevation_buffer.tif"))
     writeRaster(buffer, output_path, overwrite = TRUE)
     cat("  Saved to:", output_path, "\n")
     return(buffer)
@@ -1737,10 +1784,10 @@ polygons_to_rasterized_lines <- function(methods_to_process = "all", target_reso
   # Return both rasterized lines and elevation buffers
 
 }
-polygons_to_rasterized_lines()
+polygons_to_rasterized_lines(run_type = dataset)
 
 methods_to_compare = "all"
-calculate_buffer_overlap <- function(methods_to_compare = "all") {
+calculate_buffer_overlap <- function(methods_to_compare = "all", run_type = "original") {
   
   cat("\n=== Processing elevation buffers ===\n")
   
@@ -1754,14 +1801,16 @@ calculate_buffer_overlap <- function(methods_to_compare = "all") {
     methods <- methods_to_compare
   }
   
+  output_base <- file.path("data", "Results", test_region_name, run_type)
+  
   # Load rasterized lines and process elevation buffers
   rasterized_lines <- list()
   elevation_buffers <- list()
   
   method = methods[1]
   for (method in methods) {
-    line_path <- file.path("data", "Results", test_region_name, paste0("B_01_", method, "_rasterized_line.tif"))
-    buffer_path <- file.path("data", "Results", test_region_name, paste0("B_02_", method, "_ref_elevation_buffer.tif"))
+    line_path <- file.path(output_base, paste0("B_01_", method, "_rasterized_line.tif"))
+    buffer_path <- file.path(output_base, paste0("B_02_", method, "_ref_elevation_buffer.tif"))
     
     rasterized_lines[[method]] <- rast(line_path)
     
@@ -1787,7 +1836,7 @@ calculate_buffer_overlap <- function(methods_to_compare = "all") {
     buffer_processed <- rasterize(largest_buffer, buffer_template, field = 1, background = 0)
     
     # Save processed buffer
-    processed_path <- file.path("data", "Results", test_region_name, 
+    processed_path <- file.path(output_base, 
                                 paste0("B_02_", method, "_ref_elevation_buffer_processed.tif"))
     writeRaster(buffer_processed, processed_path, overwrite = TRUE)
     
@@ -1838,7 +1887,7 @@ calculate_buffer_overlap <- function(methods_to_compare = "all") {
   
   # Save results
   results_df <- as.data.frame(results_matrix)
-  output_path <- file.path("data", "Results", test_region_name, "B_03_buffer_overlap_percentages.csv")
+  output_path <- file.path(output_base, "B_03_buffer_overlap_percentages.csv")
   write.csv(results_df, output_path, row.names = TRUE)
   cat("\nSaved to:", output_path, "\n")
   
@@ -1846,10 +1895,11 @@ calculate_buffer_overlap <- function(methods_to_compare = "all") {
 }
 
 # Usage
-overlap_results <- calculate_buffer_overlap("all")
+overlap_results <- calculate_buffer_overlap("all", run_type = dataset)
 
 methods_to_process = "all"
-calculate_elevation_histograms <- function(methods_to_process = "all") {
+calculate_elevation_histograms <- function(methods_to_process = "all", run_type = "original") {
+  output_base <- file.path("data", "Results", test_region_name, run_type)
   
   cat("\n=== Calculating elevation histograms ===\n")
   
@@ -1910,7 +1960,7 @@ calculate_elevation_histograms <- function(methods_to_process = "all") {
     cat("  Saved histogram data to:", output_path, "\n")
   }
   
-  output_plot <- file.path("data", "Results", test_region_name, "B_04_elevation_histograms_combined.png")
+  output_plot <- file.path(output_base, "B_04_elevation_histograms_combined.png")
   png(output_plot, width = 1200, height = 800, res = 150)
   par(mfrow = c(2, 2), family = "Lato")
   
@@ -1960,7 +2010,7 @@ calculate_elevation_histograms <- function(methods_to_process = "all") {
 }
 
 # Usage
-hist_results <- calculate_elevation_histograms("all")
+hist_results <- calculate_elevation_histograms("all",run_type = dataset)
 ```
 
 # one time functions
