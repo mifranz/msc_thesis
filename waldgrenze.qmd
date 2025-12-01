@@ -273,7 +273,7 @@ config <- list(
   min_elevation = 1750, # minimum elevation to consider for treeline (default 1750)
   min_distance_to_peak = 150, # minimum distance from highest forest point to peak (default 150)
   input_dataset = "swissTLM3D", # swissTLM3D or original
-  category = ("closed_open") # closed, closed_open, closed_open_shrub , none
+  category = ("closed_open_shrub") # closed, closed_open, closed_open_shrub , none
   )
 
 
@@ -418,7 +418,7 @@ config <- list(
   mountain_top_threshold = 150, # minimum distance of a tree to the next mountain top in meters (default 150) 
   highest_pixel_subset_size = 1000,
   input_dataset = "swissTLM3D", # swissTLM3D or original
-  category = ("closed") # closed, closed_open, closed_open_shrub , ""
+  category = ("closed_open_shrub") # closed, closed_open, closed_open_shrub , ""
       )
 
 # Create hash for folder name based on config settings
@@ -713,7 +713,7 @@ config <- list(
   area_threshold_2 = 500000,
   filter_below_1000 = FALSE,
   input_dataset = "swissTLM3D", # swissTLM3D or original
-  category = ("closed_open") # closed, closed_open, closed_open_shrub , ""
+  category = ("closed_open_shrub") # closed, closed_open, closed_open_shrub , ""
 )
 
 # used by author for trees: NOAA92 to NOAA04 conversion:
@@ -1177,7 +1177,7 @@ config <- list(
   min_elevation = 1750,
   resolution = 10, # output resolution, originally 5m but computationally too heavy
   input_dataset = "swissTLM3D", # swissTLM3D or original
-  category = "closed_open" # closed, closed_open, closed_open_shrub  
+  category = "closed_open_shrub" # closed, closed_open, closed_open_shrub  
   )
 
 # Create hash for folder name based on config settings
@@ -1716,12 +1716,7 @@ compare_treeline_methods <- function(test_region_name, run_pattern = "original")
 }
 
 # swissTLM3D_closed or original
-compare_treeline_methods(test_region_name, "swissTLM3D_closed")
-
-# regions <- c("test_region_4", "test_region_5", "test_region_1")
-# for (region in regions) {
-#   compare_treeline_methods(region)
-# }
+compare_treeline_methods(test_region_name, "swissTLM3D_closed_open_shrub")
 
 ```
 
@@ -1737,13 +1732,11 @@ if (!dir.exists(file.path("data", "Results", test_region_name))) {
   dir.create(file.path("data", "Results", test_region_name), recursive = TRUE)
 }
 
-dataset = "original"
-methods = c("szerencsits")
+dataset = "swissTLM3D_closed_open_shrub"
+methods = c("all")
 target_resolution = 15
 
 # === Compile C++ function once at the start ===
-library(Rcpp)
-#11:58
 cppFunction('
 double focal_elevation_buffer_cpp(NumericVector x, double threshold) {
   int len = x.size();
@@ -1768,20 +1761,20 @@ double focal_elevation_buffer_cpp(NumericVector x, double threshold) {
 ')
 
 polygons_to_rasterized_lines <- function(methods_to_process = c("all"), target_resolution = 15, run_type = "original") {
-
+  
   run_folders <- list(
     original               = "run_original",
-    closed                 = "run_swissTLM3D_closed",
-    closed_open            = "run_swissTLM3D_closed_open",
-    closed_open_shrubs     = "run_swissTLM3D_closed_open_shurbs"
+    swissTLM3D_closed                 = "run_swissTLM3D_closed",
+    swissTLM3D_closed_open            = "run_swissTLM3D_closed_open",
+    swissTLM3D_closed_open_shrubs     = "run_swissTLM3D_closed_open_shurbs"
   )
   run_prefix <- run_folders[[run_type]]
   
   polygon_files <- list(
-    nguyen = "7_realized_treeline_nguyen.gpkg",
-    gehrig_fasel = "14b_final_treeline_regional.gpkg",
     paulsen_koerner = "10_gis_treeline_vectorized.gpkg",
-    szerencsits = "14_final_forestline.gpkg"
+    gehrig_fasel = "14b_final_treeline_regional.gpkg",
+    szerencsits = "14_final_forestline.gpkg",
+    nguyen = "7_realized_treeline_nguyen.gpkg"
   )
   terraOptions(memfrac = 0.8)
   dem_original <- crop(dem, test_region)
@@ -1800,10 +1793,10 @@ polygons_to_rasterized_lines <- function(methods_to_process = c("all"), target_r
   reference_raster <- dem
   
   all_paths <- list(
-    nguyen         = file.path("data", test_region_name, "nguyen",         paste0(run_prefix, "*")),
-    gehrig_fasel   = file.path("data", test_region_name, "gehrig_fasel",   paste0(run_prefix, "*")),
     paulsen_koerner= file.path("data", test_region_name, "paulsen_koerner",paste0(run_prefix, "*")),
-    szerencsits    = file.path("data", test_region_name, "szerencsits",    paste0(run_prefix, "*"))
+    gehrig_fasel   = file.path("data", test_region_name, "gehrig_fasel",   paste0(run_prefix, "*")),
+    szerencsits    = file.path("data", test_region_name, "szerencsits",    paste0(run_prefix, "*")),
+    nguyen         = file.path("data", test_region_name, "nguyen",         paste0(run_prefix, "*"))
   )
   
   all_paths <- lapply(all_paths, function(p) {
@@ -1880,22 +1873,156 @@ polygons_to_rasterized_lines <- function(methods_to_process = c("all"), target_r
 
 polygons_to_rasterized_lines(methods_to_process = methods, run_type = dataset)
 
+polygons_to_rasterized_lines_old <- function(methods_to_process = c("all"), target_resolution = 15, run_type = "original") {
+
+  run_type = "swissTLM3D_closed_open_shrub"
+
+  run_folders <- list(
+    original               = "run_original",
+    swissTLM3D_closed                 = "run_swissTLM3D_closed",
+    swissTLM3D_closed_open            = "run_swissTLM3D_closed_open",
+    swissTLM3D_closed_open_shrub     = "run_swissTLM3D_closed_open_shrub"
+  )
+  run_prefix <- run_folders[[run_type]]
+  if(is.null(run_prefix)){
+    stop("Invalid run_type specified.")
+  }
+  
+  
+  polygon_files <- list(
+    paulsen_koerner = "10_gis_treeline_vectorized.gpkg",
+    gehrig_fasel = "14b_final_treeline_regional.gpkg",
+    szerencsits = "14_final_forestline.gpkg",
+    nguyen = "7_realized_treeline_nguyen.gpkg"
+  )
+  terraOptions(memfrac = 0.8)
+  dem_original <- crop(dem, test_region)
+  dem_original <- mask(dem_original, test_region)
+  dem_original <- terra::trim(dem_original)
+
+  if (!is.null(target_resolution)) {
+    template <- rast(ext(dem_original), 
+                     resolution = target_resolution,
+                     crs = crs(dem_original))
+    dem <- resample(dem_original, template, method = "bilinear")
+  } else {
+    dem <- dem_original
+  }
+  
+  reference_raster <- dem
+  
+  all_paths <- list(
+    paulsen_koerner= file.path("data", test_region_name, "paulsen_koerner",paste0(run_prefix, "*")),
+    gehrig_fasel   = file.path("data", test_region_name, "gehrig_fasel",   paste0(run_prefix, "*")),
+    szerencsits    = file.path("data", test_region_name, "szerencsits",    paste0(run_prefix, "*")),
+    nguyen         = file.path("data", test_region_name, "nguyen",         paste0(run_prefix, "*"))
+  )
+  
+  all_paths <- lapply(all_paths, function(p) {
+    dirs <- Sys.glob(p)
+    if (length(dirs) == 0) stop("No matching run folder: ", p)
+    dirs[1]
+  })
+
+  output_base <- file.path("data", "Results", test_region_name, run_type)
+  
+  if (!dir.exists(output_base)) {
+    dir.create(output_base, recursive = TRUE)
+  }
+
+  # Filter methods based on parameter
+  if (methods_to_process == "all") {
+    paths <- all_paths
+  } else { paths <- all_paths[methods_to_process]}
+  
+  cat("Processing methods:", paste(names(paths), collapse = ", "), "\n")
+  
+  clip_polygon <- vect(file.path("data", test_region_name, 
+                                 paste0(test_region_name, "_clip.gpkg")))
+  
+  # Read polygons and convert to rasterized lines
+  rasterized_lines <- lapply(names(paths), function(method) {
+    cat("\nProcessing", method, "...\n")
+    gpkg_path <- file.path(paths[[method]], polygon_files[[method]])
+    poly <- vect(gpkg_path)
+    line <- as.lines(poly)
+    rast_line <- rasterize(line, reference_raster, touches = FALSE)
+    rast_line <- ifel(!is.na(rast_line), 1, NA)
+    
+    rast_line <- crop(rast_line, test_region)
+    rast_line <- mask(rast_line, test_region)
+    rast_line[clip_polygon] <- NA
+    
+    output_path <- file.path(output_base,paste0("B_01_", method, "_rasterized_line.tif"))
+    writeRaster(rast_line, output_path, overwrite = TRUE)
+    cat("  Saved to:", output_path, "\n")
+    
+    return(rast_line)
+  })
+  names(rasterized_lines) <- names(paths)
+  
+  # Create elevation buffers for each method
+  cat("\n=== Creating elevation buffers ===\n")
+  cat("Window size:", window_size_radius, "m\n")
+  cat("Elevation threshold: ±", elevation_threshold, "m\n")
+  
+  weight_matrix <- focalMat(dem, d = window_size_radius, type = "circle")
+  weight_matrix[weight_matrix > 0] <- 1
+  
+  elevation_buffers <- lapply(names(rasterized_lines), function(method) {
+    cat("\nCreating elevation buffer for", method, "...\n")
+    start_time <- Sys.time()
+    
+    # Encode: treeline cells = elevation + 5000 to mark treeline elevations within the DEM
+    encoded_dem <- ifel(rasterized_lines[[method]] == 1, dem + 5000, dem)
+    
+    # For each cell: check if any treeline in window has elevation within threshold
+    buffer <- focal(encoded_dem, w = weight_matrix,
+                   fun = function(x) {
+                     center_elev_raw <- x[ceiling(length(x)/2)]
+                     center_elev <- ifelse(center_elev_raw > 5000, center_elev_raw - 5000, center_elev_raw)
+                     
+                     # Find treeline cells in window (values > 5000)
+                     treeline_cells <- x[x > 5000]
+                     if (length(treeline_cells) == 0) return(0)
+                     
+                     # Decode their elevations
+                     treeline_elevs <- treeline_cells - 5000
+                     
+                     # Check if center elevation is within threshold of ANY treeline
+                     elev_diffs <- abs(treeline_elevs - center_elev)
+                     within <- any(elev_diffs <= elevation_threshold)
+                     
+                     return(as.numeric(within))
+                   })
+    
+    end_time <- Sys.time()
+    runtime <- end_time - start_time
+    cat("Completed in", round(runtime, 2), attr(runtime, "units"), "\n")
+    output_path <- file.path(output_base, paste0("B_02_", method, "_ref_elevation_buffer.tif"))
+    writeRaster(buffer, output_path, overwrite = TRUE)
+    cat("  Saved to:", output_path, "\n")
+    return(buffer)
+  })
+  names(elevation_buffers) <- names(rasterized_lines)
+}
+polygons_to_rasterized_lines_old(methods_to_process =methods, run_type = dataset)
+
 # 11:03
-methods_to_compare = "all"
 calculate_buffer_overlap <- function(methods_to_process = c("nguyen","gehrig_fasel", "paulsen_koerner", "szerencsits"), run_type = dataset) {
   
   cat("\n=== Processing elevation buffers ===\n")
   
   # Define all methods
-  all_methods <- c("nguyen", "gehrig_fasel", "paulsen_koerner", "szerencsits")
+  all_methods <- c("paulsen_koerner", "gehrig_fasel", "szerencsits", "nguyen")
   
   # Filter methods
-  if (methods_to_compare[1] == "all") {
+  if (methods_to_process[1] == "all") {
     methods <- all_methods
   } else {
-    methods <- methods_to_compare
+    methods <- methods_to_process
   }
-  
+
   output_base <- file.path("data", "Results", test_region_name, run_type)
   
   # Load rasterized lines and process elevation buffers
@@ -1974,7 +2101,7 @@ calculate_buffer_overlap <- function(methods_to_process = c("nguyen","gehrig_fas
       overlap_count <- sum(values(overlap), na.rm = TRUE)
       
       # Calculate percentage
-      percentage <- round((overlap_count / tested_total) * 100, 2)
+      percentage <- round((overlap_count / tested_total) * 100, 5)
       
       results_matrix[tested_method, reference_method] <- percentage
       
@@ -2000,14 +2127,13 @@ calculate_buffer_overlap <- function(methods_to_process = c("nguyen","gehrig_fas
 # Usage
 overlap_results <- calculate_buffer_overlap(methods_to_process = methods, run_type = dataset)
 
-methods_to_process = "all"
 calculate_elevation_histograms <- function(methods_to_process = methods, run_type = dataset) {
   output_base <- file.path("data", "Results", test_region_name, run_type)
   
   cat("\n=== Calculating elevation histograms ===\n")
   
   # Define all methods
-  all_methods <- c("nguyen", "gehrig_fasel", "paulsen_koerner", "szerencsits")
+  all_methods <- c("paulsen_koerner", "gehrig_fasel", "szerencsits", "nguyen")
   
   # Filter methods
   if (methods_to_process[1] == "all") {
@@ -2064,11 +2190,11 @@ calculate_elevation_histograms <- function(methods_to_process = methods, run_typ
   }
   
   output_plot <- file.path(output_base, "B_04_elevation_histograms_combined.png")
-  png(output_plot, width = 1200, height = 800, res = 150)
+  png(output_plot, width = 2400, height = 1600, res = 300)
   par(mfrow = c(2, 2), family = "Lato")
   
-  all_methods <- c("nguyen","gehrig_fasel", "paulsen_koerner", "szerencsits") # add "nguyen"
-  all_methods_full <- c("Nguyen 2025","Gehrig-Fasel et al. 2007", "Paulsen & Körner 2001", "Szerencsits 2012") # add "Nguyen 2025", 
+  all_methods <- c("paulsen_koerner", "gehrig_fasel", "szerencsits", "nguyen")
+  all_methods_full <- c( "Paulsen & Körner 2001", "Gehrig-Fasel et al. 2007", "Szerencsits 2012", "Nguyen 2025")
   
   # Calculate global ranges
   xlim_global <- range(unlist(lapply(elevation_data[all_methods], range, na.rm = TRUE)))
@@ -2087,12 +2213,13 @@ calculate_elevation_histograms <- function(methods_to_process = methods, run_typ
     
     hist(elevation_data[[method]],
          breaks = breaks_global,
+         xaxt = "n",
          main = method_full,
          xlab = "Elevation (m)",
          ylab = "Frequency",
          col = "#b2b8cc",
          border = "white",
-         xlim = range(1750, 2350),
+         xlim = range(1700, 2500),
          # ylim = range(0, 20000),
          cex.main = 1,   # title size
          cex.lab = 0.5,    # axis label size
@@ -2100,6 +2227,7 @@ calculate_elevation_histograms <- function(methods_to_process = methods, run_typ
     abline(v = mean(elevation_data[[method]]), col = "#ac004f", lwd = 1.5, lty = 2)
     legend("topleft", legend = paste("Mean:", round(mean(elevation_data[[method]]))), 
            col = "#ac004f", lty = 2, lwd = 1.5, bty = "n", cex = 0.5)
+    axis(1, at = seq(1700, 2500, 100), cex.axis = 0.5)
   }
   
   dev.off()
@@ -2113,7 +2241,11 @@ calculate_elevation_histograms <- function(methods_to_process = methods, run_typ
 }
 
 
-# Usage
+# loop to run for all datasets
+datasets = c("swissTLM3D_closed", "swissTLM3D_closed_open_shrub")
+for (dataset in datasets) {
+  calculate_elevation_histograms(methods_to_process = methods, run_type = dataset)
+}
 hist_results <- calculate_elevation_histograms(methods,run_type = dataset)
 ```
 
@@ -2127,18 +2259,25 @@ dem <-  rast(file.path("data", test_region_name, glue("DEM_{res}m.tif")))
 if (!dir.exists(file.path("data", "Results", test_region_name))) {
   dir.create(file.path("data", "Results", test_region_name), recursive = TRUE)
 }
-dataset = "original" # "original or swissTLM3D_closed or swissTLM3D_closed_open
-methods = c("szerencsits") # "nguyen","gehrig_fasel", "paulsen_koerner", "szerencsits"
+dataset = "original" # "original or closed or closed_open
+methods = c("all") # "nguyen","gehrig_fasel", "paulsen_koerner", "szerencsits"
+
+run_type = "closed"
 target_resolution = 15
+methods_to_process = "all"
+
+
 polygons_to_rasterized_lines <- function(methods_to_process = c("all"), target_resolution = 15, run_type = "original") {
 
   run_folders <- list(
     original               = "run_original",
     closed                 = "run_swissTLM3D_closed",
-    closed_open            = "run_swissTLM3D_closed_open",
-    closed_open_shrubs     = "run_swissTLM3D_closed_open_shurbs"
+    closed_open            = "run_swissTLM3D_closed_open"
   )
   run_prefix <- run_folders[[run_type]]
+  if(is.null(run_prefix)){
+    stop("Invalid run_type specified.")
+  }
   
   
   polygon_files <- list(
@@ -2176,8 +2315,8 @@ polygons_to_rasterized_lines <- function(methods_to_process = c("all"), target_r
   if (length(dirs) == 0) stop("No matching run folder: ", p)
   dirs[1]
   })
-  
-  output_base <- file.path("data", "Results", test_region_name, run_type)
+
+  output_base <- file.path("data", "Results", test_region_name, sub("^run_", "", run_prefix))
   
   if (!dir.exists(output_base)) {
     dir.create(output_base, recursive = TRUE)
@@ -2218,6 +2357,7 @@ polygons_to_rasterized_lines <- function(methods_to_process = c("all"), target_r
   })
   names(rasterized_lines) <- names(paths)
   
+  return()
   # Create elevation buffers for each method
   cat("\n=== Creating elevation buffers ===\n")
   cat("Window size:", window_size_radius, "m\n")
@@ -2268,8 +2408,7 @@ polygons_to_rasterized_lines <- function(methods_to_process = c("all"), target_r
 
 }
 polygons_to_rasterized_lines(methods_to_process =methods, run_type = dataset)
-# 11:03
-methods_to_compare = "all"
+
 calculate_buffer_overlap <- function(methods_to_process = c("nguyen","gehrig_fasel", "paulsen_koerner", "szerencsits"), run_type = dataset) {
   
   cat("\n=== Processing elevation buffers ===\n")
@@ -2278,10 +2417,10 @@ calculate_buffer_overlap <- function(methods_to_process = c("nguyen","gehrig_fas
   all_methods <- c("nguyen", "gehrig_fasel", "paulsen_koerner", "szerencsits")
   
   # Filter methods
-  if (methods_to_compare[1] == "all") {
+  if (methods_to_process[1] == "all") {
     methods <- all_methods
   } else {
-    methods <- methods_to_compare
+    methods <- methods_to_process
   }
   
   output_base <- file.path("data", "Results", test_region_name, run_type)
@@ -2388,9 +2527,15 @@ calculate_buffer_overlap <- function(methods_to_process = c("nguyen","gehrig_fas
 # Usage
 overlap_results <- calculate_buffer_overlap(methods_to_process = methods, run_type = dataset)
 
-methods_to_process = "all"
+
 calculate_elevation_histograms <- function(methods_to_process = methods, run_type = dataset) {
-  output_base <- file.path("data", "Results", test_region_name, run_type)
+  run_folders <- list(
+    original               = "run_original",
+    closed                 = "run_swissTLM3D_closed",
+    closed_open            = "run_swissTLM3D_closed_open"
+  )
+  run_prefix <- run_folders[[run_type]]
+  output_base <- file.path("data", "Results", test_region_name, sub("^run_", "", run_prefix))
   
   cat("\n=== Calculating elevation histograms ===\n")
   
@@ -2418,9 +2563,7 @@ calculate_elevation_histograms <- function(methods_to_process = methods, run_typ
     # Load rasterized line
     line_path <- file.path(output_base, paste0("B_01_", method, "_rasterized_line.tif"))
     rasterized_line <- rast(line_path)
-    rwrite(rasterized_line)
     rasterized_line <- resample(rasterized_line, dem, method = "near")
-    rwrite(rasterized_line)
     # Extract elevation values where treeline exists
     treeline_elevations <- dem * rasterized_line
     elev_values <- values(treeline_elevations)
@@ -2436,7 +2579,7 @@ calculate_elevation_histograms <- function(methods_to_process = methods, run_typ
     
     # Create histogram
     hist_obj <- hist(elev_values, 
-                     breaks = 30,
+                     breaks = 60,
                      plot = FALSE)
     histograms[[method]] <- hist_obj
     
@@ -2452,7 +2595,7 @@ calculate_elevation_histograms <- function(methods_to_process = methods, run_typ
   }
   
   output_plot <- file.path(output_base, "B_04_elevation_histograms_combined.png")
-  png(output_plot, width = 1200, height = 800, res = 150)
+  png(output_plot, width = 2400, height = 1600, res = 300)
   par(mfrow = c(2, 2), family = "Lato")
   
   all_methods <- c("nguyen","gehrig_fasel", "paulsen_koerner", "szerencsits") # add "nguyen"
@@ -2474,20 +2617,22 @@ calculate_elevation_histograms <- function(methods_to_process = methods, run_typ
     method_full <- all_methods_full[i]
     
     hist(elevation_data[[method]],
-         breaks = breaks_global,
-         main = method_full,
-         xlab = "Elevation (m)",
-         ylab = "Frequency",
-         col = "#b2b8cc",
-         border = "white",
-         xlim = range(1750, 2350),
-         # ylim = range(0, 20000),
-         cex.main = 1,   # title size
-         cex.lab = 0.5,    # axis label size
-         cex.axis = 0.5)   # axis tick label size
+       breaks = breaks_global,
+       main = method_full,
+       xlab = "Elevation (m)",
+       ylab = "Frequency",
+       col = "#b2b8cc",
+       border = "white",
+       xlim = range(1600, 2500),
+       ylim = range(0, 6500),
+       cex.main = 1,
+       cex.lab = 0.5,
+       cex.axis = 0.5,
+       xaxt = "n")
+    axis(1, at = seq(1600, 2500, by = 100), cex.axis = 0.5)
     abline(v = mean(elevation_data[[method]]), col = "#ac004f", lwd = 1.5, lty = 2)
     legend("topleft", legend = paste("Mean:", round(mean(elevation_data[[method]]))), 
-           col = "#ac004f", lty = 2, lwd = 1.5, bty = "n", cex = 0.5)
+         col = "#ac004f", lty = 2, lwd = 1.5, bty = "n", cex = 0.5)
   }
   
   dev.off()
