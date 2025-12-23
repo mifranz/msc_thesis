@@ -277,21 +277,6 @@ config <- list(
   )
 
 
-# NOAA92 to NOAA04 conversion:
-# 9 = 52    (Aufforstungen) 
-# 10 = 54   (Waldschäden) less than 60%, not considered forest
-# 11 = 50   (Normalwald) 
-# 12 = 56   (Aufgelöster Wald auf unproduktiven Flächen)
-# 13 = 55   (Aufgelöster Wald auf landwirschaftsflächen) 
-# 14 = 51   (Schmaler Wald)  
-# 15 = 57   (Gebüschwald) probably not considerest forest
-# 17 = 58   (Feldgehölze, Hecken) less wide than 25m, not considered forest
-# 18 = 59   (Baumgruppen (auf Landwirtschaftsflächen)) not considered forest
-# 19 = 60   (Baumgruppen (auf unproduktiven Flächen)) not considered forest
-# 75 = 37   (Obstanlagen) robably not considerest forest
-# 76 = 38   (Feldobst) *Kategorien wurden zusammengefasst, robably not considerest forest
-# 77 = 38   (Feldobst) robably not considerest forest
-
 # Create hash for folder name based on config settings
 config_hash <- digest::digest(config, algo = "md5")
 run_folder <- here("data", test_region_name, author, glue("run_{config$input_dataset}_{config$category}_{substr(config_hash, 1, 8)}"))
@@ -299,7 +284,6 @@ run_folder <- here("data", test_region_name, author, glue("run_{config$input_dat
 if (!dir.exists(run_folder)) {
   dir.create(run_folder, recursive = TRUE)
 }
-
 # Save config for reference
 writeLines(capture.output(dput(config)), file.path(run_folder, "config.txt"))
 
@@ -402,6 +386,24 @@ end_time <- Sys.time()
 cat("Duration:", round(difftime(end_time, start_time, units="secs"), 1), "seconds\n")
 ```
 
+# NOAA92 to NOAA04 conversion:
+```{r}
+# 9 = 52    (Aufforstungen) 
+# 10 = 54   (Waldschäden) less than 60%, not considered forest
+# 11 = 50   (Normalwald) 
+# 12 = 56   (Aufgelöster Wald auf unproduktiven Flächen)
+# 13 = 55   (Aufgelöster Wald auf landwirschaftsflächen) 
+# 14 = 51   (Schmaler Wald)  
+# 15 = 57   (Gebüschwald) probably not considerest forest
+# 17 = 58   (Feldgehölze, Hecken) less wide than 25m, not considered forest
+# 18 = 59   (Baumgruppen (auf Landwirtschaftsflächen)) not considered forest
+# 19 = 60   (Baumgruppen (auf unproduktiven Flächen)) not considered forest
+# 75 = 37   (Obstanlagen) robably not considerest forest
+# 76 = 38   (Feldobst) *Kategorien wurden zusammengefasst, robably not considerest forest
+# 77 = 38   (Feldobst) robably not considerest forest
+```
+
+
 # Gehrig Fasel 2007
 
 ```{r}
@@ -452,6 +454,7 @@ write_config(config, run_folder)
 # 75 = 37   (Obstanlagen)
 # 76 = 38   (Feldobst) *Kategorien wurden zusammengefasst
 # 77 = 38   (Feldobst)
+
 
 prepare_gehrig_fasel()
 
@@ -712,8 +715,9 @@ config <- list(
   bodenbedeckung_symb_objektart = c("Wald_offen_Symb"),
   area_threshold_2 = 500000,
   filter_below_1000 = FALSE,
-  input_dataset = "swissTLM3D", # swissTLM3D or original
-  category = ("closed_open_shrub") # closed, closed_open, closed_open_shrub , ""
+  input_dataset = "original", # swissTLM3D or original
+  category = (""), # closed, closed_open, closed_open_shrub , ""
+  dummy = ""
 )
 
 # used by author for trees: NOAA92 to NOAA04 conversion:
@@ -1732,7 +1736,7 @@ if (!dir.exists(file.path("data", "Results", test_region_name))) {
   dir.create(file.path("data", "Results", test_region_name), recursive = TRUE)
 }
 
-dataset = "swissTLM3D_closed_open_shrub"
+dataset = "original"
 methods = c("all")
 target_resolution = 15
 
@@ -2207,27 +2211,29 @@ calculate_elevation_histograms <- function(methods_to_process = methods, run_typ
                      ceiling(xlim_global[2]/bin_width)*bin_width, 
                      by = bin_width)
   
+  colors <-c("#fcc67f", "#778da9", "#67ab9f", "#e58b8f")
   for (i in seq_along(all_methods)) {
-    method <- all_methods[i]
-    method_full <- all_methods_full[i]
-    
-    hist(elevation_data[[method]],
-         breaks = breaks_global,
-         xaxt = "n",
-         main = method_full,
-         xlab = "Elevation (m)",
-         ylab = "Frequency",
-         col = "#b2b8cc",
-         border = "white",
-         xlim = range(1700, 2500),
-         # ylim = range(0, 20000),
-         cex.main = 1,   # title size
-         cex.lab = 0.5,    # axis label size
-         cex.axis = 0.5)   # axis tick label size
-    abline(v = mean(elevation_data[[method]]), col = "#ac004f", lwd = 1.5, lty = 2)
-    legend("topleft", legend = paste("Mean:", round(mean(elevation_data[[method]]))), 
-           col = "#ac004f", lty = 2, lwd = 1.5, bty = "n", cex = 0.5)
-    axis(1, at = seq(1700, 2500, 100), cex.axis = 0.5)
+      method <- all_methods[i]
+      method_full <- all_methods_full[i]
+      
+      par(col.main = colors[i])  # set title color here
+      
+      hist(elevation_data[[method]],
+           breaks = breaks_global,
+           xaxt = "n",
+           main = method_full,
+           xlab = "Elevation (m)",
+           ylab = "Frequency",
+           col = "#e1d5e7",
+           border = "white",
+           xlim = range(1700, 2500),
+           cex.main = 1,
+           cex.lab = 0.5,
+           cex.axis = 0.5)
+      abline(v = mean(elevation_data[[method]]), col = colors[i], lwd = 1.5, lty = 2)
+      legend("topleft", legend = paste("Mean:", round(mean(elevation_data[[method]]))), 
+             col = colors[i], lty = 2, lwd = 1.5, bty = "n", cex = 0.5)
+      axis(1, at = seq(1700, 2500, 100), cex.axis = 0.5)
   }
   
   dev.off()
@@ -2242,7 +2248,7 @@ calculate_elevation_histograms <- function(methods_to_process = methods, run_typ
 
 
 # loop to run for all datasets
-datasets = c("swissTLM3D_closed", "swissTLM3D_closed_open_shrub")
+datasets = c("original","swissTLM3D_closed", "swissTLM3D_closed_open")
 for (dataset in datasets) {
   calculate_elevation_histograms(methods_to_process = methods, run_type = dataset)
 }

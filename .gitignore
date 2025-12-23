@@ -1,6 +1,8 @@
 
 data/
 
+styles/
+
 # History files
 .Rhistory
 .Rapp.history
@@ -17,6 +19,8 @@ data/
 
 # Output files from R CMD build
 /*.tar.gz
+
+
 
 /*.sgrd
 /*.sdat
