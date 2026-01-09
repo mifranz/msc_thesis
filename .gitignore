@@ -20,7 +20,7 @@ styles/
 # Output files from R CMD build
 /*.tar.gz
 
-
+waldgrenze.qgz
 
 /*.sgrd
 /*.sdat
