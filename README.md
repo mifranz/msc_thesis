@@ -102,15 +102,15 @@ Source data must be downloaded manually.
 
 ### Federal Statistical Office (BFS)
 
-| Dataset | Description |
-|---------|-------------|
-| Arealstatistik | Land use statistics (AS85, AS97, AS09, AS18, AS25) | https://www.bfs.admin.ch/bfs/de/home/dienstleistungen/geostat/geodaten-bundesstatistik/boden-nutzung-bedeckung-eignung/arealstatistik-schweiz.html
+| Dataset | Description | Link |
+|---------|-------------|------|
+| Arealstatistik | Land use statistics (AS85, AS97, AS09, AS18, AS25) | [BFS](https://www.bfs.admin.ch/bfs/de/home/dienstleistungen/geostat/geodaten-bundesstatistik/boden-nutzung-bedeckung-eignung/arealstatistik-schweiz.html) |
 
 ### Federal Office for the Environment FOEN
 
-| Dataset | Description |
-|---------|-------------|
-| Einzugsgebiete 2km | catchment areas | https://data.geo.admin.ch/browser/index.html#/collections/ch.bafu.wasser-einzugsgebietsgliederung/items/wasser-einzugsgebietsgliederung
+| Dataset | Description | Link |
+|---------|-------------|------|
+| Einzugsgebiete 2km | catchment areas | [FOEN](https://data.geo.admin.ch/browser/index.html#/collections/ch.bafu.wasser-einzugsgebietsgliederung/items/wasser-einzugsgebietsgliederung) |
 
 ### Nguyen (2025)
 
