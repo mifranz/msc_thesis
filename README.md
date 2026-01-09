@@ -173,7 +173,3 @@ Runs are saved in hashed folders based on config parameters for reproducibility 
 - **Pixel comparison**: `compare_treeline_methods()`
 - **Epsilon bands**: `polygons_to_rasterized_lines()`, `calculate_buffer_overlap()`
 - **Elevation histograms**: `calculate_elevation_histograms()`
-
-
-## License
-
